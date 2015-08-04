@@ -4,21 +4,21 @@
 
 #pragma once
 
-int decode_arm_instr(uint32_t instr, int32_t *idx);
+#include "common/common_types.h"
 
-enum DECODE_STATUS {
-    DECODE_SUCCESS,
-    DECODE_FAILURE
+enum class ARMDecodeStatus {
+    SUCCESS,
+    FAILURE
 };
 
-struct instruction_set_encoding_item {
+ARMDecodeStatus DecodeARMInstruction(u32 instr, s32* idx);
+
+struct InstructionSetEncodingItem {
     const char *name;
     int attribute_value;
     int version;
     u32 content[21];
 };
-
-typedef struct instruction_set_encoding_item ISEITEM;
 
 // ARM versions
 enum {
@@ -36,4 +36,4 @@ enum {
     ARMV6K,
 };
 
-extern const ISEITEM arm_instruction[];
+extern const InstructionSetEncodingItem arm_instruction[];

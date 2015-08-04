@@ -2,10 +2,12 @@
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
+#include <memory>
 #include <string>
 
 #include "common/logging/log.h"
 #include "common/make_unique.h"
+#include "common/string_util.h"
 
 #include "core/file_sys/archive_romfs.h"
 #include "core/hle/kernel/process.h"
@@ -54,18 +56,18 @@ static FileType IdentifyFile(FileUtil::IOFile& file) {
 static FileType GuessFromExtension(const std::string& extension_) {
     std::string extension = Common::ToLower(extension_);
 
-    if (extension == ".elf")
+    if (extension == ".elf" || extension == ".axf")
         return FileType::ELF;
-    else if (extension == ".axf")
-        return FileType::ELF;
-    else if (extension == ".cxi")
+
+    if (extension == ".cci" || extension == ".3ds")
+        return FileType::CCI;
+
+    if (extension == ".cxi")
         return FileType::CXI;
-    else if (extension == ".cci")
-        return FileType::CCI;
-    else if (extension == ".3ds")
-        return FileType::CCI;
-    else if (extension == ".3dsx")
+
+    if (extension == ".3dsx")
         return FileType::THREEDSX;
+
     return FileType::Unknown;
 }
 
@@ -88,8 +90,8 @@ static const char* GetFileTypeString(FileType type) {
 }
 
 ResultStatus LoadFile(const std::string& filename) {
-    std::unique_ptr<FileUtil::IOFile> file(new FileUtil::IOFile(filename, "rb"));
-    if (!file->IsOpen()) {
+    FileUtil::IOFile file(filename, "rb");
+    if (!file.IsOpen()) {
         LOG_ERROR(Loader, "Failed to load file %s", filename.c_str());
         return ResultStatus::Error;
     }
@@ -97,7 +99,7 @@ ResultStatus LoadFile(const std::string& filename) {
     std::string filename_filename, filename_extension;
     Common::SplitPath(filename, nullptr, &filename_filename, &filename_extension);
 
-    FileType type = IdentifyFile(*file);
+    FileType type = IdentifyFile(file);
     FileType filename_type = GuessFromExtension(filename_extension);
 
     if (type != filename_type) {
@@ -122,7 +124,7 @@ ResultStatus LoadFile(const std::string& filename) {
     case FileType::CXI:
     case FileType::CCI:
     {
-        AppLoader_NCCH app_loader(std::move(file));
+        AppLoader_NCCH app_loader(std::move(file), filename);
 
         // Load application and RomFS
         if (ResultStatus::Success == app_loader.Load()) {

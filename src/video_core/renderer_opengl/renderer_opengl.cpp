@@ -2,22 +2,27 @@
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
+#include <algorithm>
+#include <cstddef>
+#include <cstdlib>
+
+#include "common/assert.h"
+#include "common/emu_window.h"
+#include "common/logging/log.h"
+#include "common/profiler_reporting.h"
+
 #include "core/hw/gpu.h"
 #include "core/hw/hw.h"
 #include "core/hw/lcd.h"
 #include "core/memory.h"
 #include "core/settings.h"
 
-#include "common/emu_window.h"
-#include "common/logging/log.h"
-#include "common/profiler_reporting.h"
-
 #include "video_core/video_core.h"
 #include "video_core/renderer_opengl/renderer_opengl.h"
 #include "video_core/renderer_opengl/gl_shader_util.h"
 #include "video_core/renderer_opengl/gl_shaders.h"
 
-#include <algorithm>
+#include "video_core/debug_utils/debug_utils.h"
 
 /**
  * Vertex structure that the drawn screen rectangles are composed of.
@@ -126,6 +131,10 @@ void RendererOpenGL::SwapBuffers() {
             hw_rasterizer->Reset();
         }
     }
+
+    if (Pica::g_debug_context && Pica::g_debug_context->recorder) {
+        Pica::g_debug_context->recorder->FrameFinished();
+    }
 }
 
 /**
@@ -170,6 +179,9 @@ void RendererOpenGL::LoadFBToActiveGLTexture(const GPU::Regs::FramebufferConfig&
                     texture.gl_format, texture.gl_type, framebuffer_data);
 
     glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+
+    state.texture_units[0].texture_2d = 0;
+    state.Apply();
 }
 
 /**
@@ -238,6 +250,9 @@ void RendererOpenGL::InitOpenGLObjects() {
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     }
+
+    state.texture_units[0].texture_2d = 0;
+    state.Apply();
 
     hw_rasterizer->InitObjects();
 }
@@ -370,6 +385,8 @@ void RendererOpenGL::Init() {
     }
 
     LOG_INFO(Render_OpenGL, "GL_VERSION: %s", glGetString(GL_VERSION));
+    LOG_INFO(Render_OpenGL, "GL_VENDOR: %s", glGetString(GL_VENDOR));
+    LOG_INFO(Render_OpenGL, "GL_RENDERER: %s", glGetString(GL_RENDERER));
     InitOpenGLObjects();
 }
 

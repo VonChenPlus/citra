@@ -11,6 +11,10 @@
 #include "bootmanager.h"
 #include "main.h"
 
+#include "common/string_util.h"
+#include "common/scm_rev.h"
+#include "common/key_map.h"
+
 #include "core/core.h"
 #include "core/settings.h"
 #include "core/system.h"
@@ -61,7 +65,7 @@ void EmuThread::run() {
             was_active = false;
         } else {
             std::unique_lock<std::mutex> lock(running_mutex);
-            running_cv.wait(lock, [this]{ return IsRunning() || stop_run; });
+            running_cv.wait(lock, [this]{ return IsRunning() || exec_step || stop_run; });
         }
     }
 
@@ -90,7 +94,7 @@ private:
 };
 
 GRenderWindow::GRenderWindow(QWidget* parent, EmuThread* emu_thread) :
-    QWidget(parent), emu_thread(emu_thread), keyboard_id(0) {
+    QWidget(parent), keyboard_id(0), emu_thread(emu_thread) {
 
     std::string window_title = Common::StringFromFormat("Citra | %s-%s", Common::g_scm_branch, Common::g_scm_desc);
     setWindowTitle(QString::fromStdString(window_title));
@@ -244,32 +248,9 @@ void GRenderWindow::mouseReleaseEvent(QMouseEvent *event)
 
 void GRenderWindow::ReloadSetKeymaps()
 {
-    KeyMap::SetKeyMapping({Settings::values.pad_a_key,      keyboard_id}, Service::HID::PAD_A);
-    KeyMap::SetKeyMapping({Settings::values.pad_b_key,      keyboard_id}, Service::HID::PAD_B);
-    KeyMap::SetKeyMapping({Settings::values.pad_select_key, keyboard_id}, Service::HID::PAD_SELECT);
-    KeyMap::SetKeyMapping({Settings::values.pad_start_key,  keyboard_id}, Service::HID::PAD_START);
-    KeyMap::SetKeyMapping({Settings::values.pad_dright_key, keyboard_id}, Service::HID::PAD_RIGHT);
-    KeyMap::SetKeyMapping({Settings::values.pad_dleft_key,  keyboard_id}, Service::HID::PAD_LEFT);
-    KeyMap::SetKeyMapping({Settings::values.pad_dup_key,    keyboard_id}, Service::HID::PAD_UP);
-    KeyMap::SetKeyMapping({Settings::values.pad_ddown_key,  keyboard_id}, Service::HID::PAD_DOWN);
-    KeyMap::SetKeyMapping({Settings::values.pad_r_key,      keyboard_id}, Service::HID::PAD_R);
-    KeyMap::SetKeyMapping({Settings::values.pad_l_key,      keyboard_id}, Service::HID::PAD_L);
-    KeyMap::SetKeyMapping({Settings::values.pad_x_key,      keyboard_id}, Service::HID::PAD_X);
-    KeyMap::SetKeyMapping({Settings::values.pad_y_key,      keyboard_id}, Service::HID::PAD_Y);
-
-    KeyMap::SetKeyMapping({Settings::values.pad_zl_key,     keyboard_id}, Service::HID::PAD_ZL);
-    KeyMap::SetKeyMapping({Settings::values.pad_zr_key,     keyboard_id}, Service::HID::PAD_ZR);
-
-    // KeyMap::SetKeyMapping({Settings::values.pad_touch_key,  keyboard_id}, Service::HID::PAD_TOUCH);
-
-    KeyMap::SetKeyMapping({Settings::values.pad_cright_key, keyboard_id}, Service::HID::PAD_C_RIGHT);
-    KeyMap::SetKeyMapping({Settings::values.pad_cleft_key,  keyboard_id}, Service::HID::PAD_C_LEFT);
-    KeyMap::SetKeyMapping({Settings::values.pad_cup_key,    keyboard_id}, Service::HID::PAD_C_UP);
-    KeyMap::SetKeyMapping({Settings::values.pad_cdown_key,  keyboard_id}, Service::HID::PAD_C_DOWN);
-    KeyMap::SetKeyMapping({Settings::values.pad_sright_key, keyboard_id}, Service::HID::PAD_CIRCLE_RIGHT);
-    KeyMap::SetKeyMapping({Settings::values.pad_sleft_key,  keyboard_id}, Service::HID::PAD_CIRCLE_LEFT);
-    KeyMap::SetKeyMapping({Settings::values.pad_sup_key,    keyboard_id}, Service::HID::PAD_CIRCLE_UP);
-    KeyMap::SetKeyMapping({Settings::values.pad_sdown_key,  keyboard_id}, Service::HID::PAD_CIRCLE_DOWN);
+    for (int i = 0; i < Settings::NativeInput::NUM_INPUTS; ++i) {
+        KeyMap::SetKeyMapping({Settings::values.input_mappings[Settings::NativeInput::All[i]], keyboard_id}, Service::HID::pad_mapping[i]);
+    }
 }
 
 void GRenderWindow::OnClientAreaResized(unsigned width, unsigned height)

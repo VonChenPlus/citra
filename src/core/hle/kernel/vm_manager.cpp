@@ -2,6 +2,8 @@
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
+#include <iterator>
+
 #include "common/assert.h"
 
 #include "core/hle/kernel/vm_manager.h"
@@ -30,6 +32,10 @@ bool VirtualMemoryArea::CanBeMergedWith(const VirtualMemoryArea& next) const {
 }
 
 VMManager::VMManager() {
+    Reset();
+}
+
+VMManager::~VMManager() {
     Reset();
 }
 
@@ -126,6 +132,16 @@ void VMManager::Reprotect(VMAHandle vma_handle, VMAPermission new_perms) {
     UpdatePageTableForVMA(vma);
 
     MergeAdjacent(iter);
+}
+
+void VMManager::LogLayout() const {
+    for (const auto& p : vma_map) {
+        const VirtualMemoryArea& vma = p.second;
+        LOG_DEBUG(Kernel, "%08X - %08X  size: %8X %c%c%c", vma.base, vma.base + vma.size, vma.size,
+            (u8)vma.permissions & (u8)VMAPermission::Read    ? 'R' : '-',
+            (u8)vma.permissions & (u8)VMAPermission::Write   ? 'W' : '-',
+            (u8)vma.permissions & (u8)VMAPermission::Execute ? 'X' : '-');
+    }
 }
 
 VMManager::VMAIter VMManager::StripIterConstness(const VMAHandle & iter) {

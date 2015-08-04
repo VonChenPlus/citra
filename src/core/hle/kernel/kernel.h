@@ -4,10 +4,11 @@
 
 #pragma once
 
-#include <boost/intrusive_ptr.hpp>
+#include <boost/smart_ptr/intrusive_ptr.hpp>
 
+#include <algorithm>
 #include <array>
-#include <memory>
+#include <cstddef>
 #include <string>
 #include <vector>
 
@@ -15,8 +16,6 @@
 
 #include "core/hle/hle.h"
 #include "core/hle/result.h"
-
-struct ApplicationInfo;
 
 namespace Kernel {
 
@@ -48,6 +47,7 @@ enum class HandleType : u32 {
     Semaphore       = 10,
     Timer           = 11,
     ResourceLimit   = 12,
+    CodeSet         = 13,
 };
 
 enum {
@@ -86,6 +86,7 @@ public:
         case HandleType::Process:
         case HandleType::AddressArbiter:
         case HandleType::ResourceLimit:
+        case HandleType::CodeSet:
             return false;
         }
     }
@@ -139,12 +140,6 @@ public:
      * @param thread Pointer to thread to remove
      */
     void RemoveWaitingThread(Thread* thread);
-
-    /**
-     * Wake up the next thread waiting on this object
-     * @return Pointer to the thread that was resumed, nullptr if no threads are waiting
-     */
-    SharedPtr<Thread> WakeupNextThread();
 
     /// Wake up all threads waiting on this object
     void WakeupAllWaitingThreads();

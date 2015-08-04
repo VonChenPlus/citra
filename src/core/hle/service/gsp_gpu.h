@@ -5,8 +5,11 @@
 #pragma once
 
 #include <cstddef>
+#include <string>
 
 #include "common/bit_field.h"
+#include "common/common_types.h"
+
 #include "core/hle/service/service.h"
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -158,6 +161,7 @@ static_assert(sizeof(CommandBuffer) == 0x200, "CommandBuffer struct has incorrec
 class Interface : public Service::Interface {
 public:
     Interface();
+    ~Interface() override;
 
     std::string GetPortName() const override {
         return "gsp::Gpu";
@@ -170,4 +174,14 @@ public:
  */
 void SignalInterrupt(InterruptId interrupt_id);
 
+void SetBufferSwap(u32 screen_id, const FrameBufferInfo& info);
+
+/**
+ * Retrieves the framebuffer info stored in the GSP shared memory for the
+ * specified screen index and thread id.
+ * @param thread_id GSP thread id of the process that accesses the structure that we are requesting.
+ * @param screen_index Index of the screen we are requesting (Top = 0, Bottom = 1).
+ * @returns FramebufferUpdate Information about the specified framebuffer.
+ */
+FrameBufferUpdate* GetFrameBufferInfo(u32 thread_id, u32 screen_index);
 } // namespace

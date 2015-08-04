@@ -2,8 +2,7 @@
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
-#include <stack>
-
+#include <boost/container/static_vector.hpp>
 #include <boost/range/algorithm.hpp>
 
 #include <common/file_util.h>
@@ -27,7 +26,7 @@ namespace Pica {
 namespace VertexShader {
 
 struct VertexShaderState {
-    const u32* program_counter;
+    u32 program_counter;
 
     const float24* input_register_table[16];
     Math::Vec4<float24> output_registers[16];
@@ -53,7 +52,7 @@ struct VertexShaderState {
     };
 
     // TODO: Is there a maximal size for this?
-    std::stack<CallStackElement> call_stack;
+    boost::container::static_vector<CallStackElement, 16> call_stack;
 
     struct {
         u32 max_offset; // maximum program counter ever reached
@@ -71,15 +70,15 @@ static void ProcessShaderCode(VertexShaderState& state) {
 
     while (true) {
         if (!state.call_stack.empty()) {
-            auto& top = state.call_stack.top();
-            if (state.program_counter - program_code.data() == top.final_address) {
+            auto& top = state.call_stack.back();
+            if (state.program_counter == top.final_address) {
                 state.address_registers[2] += top.loop_increment;
 
                 if (top.repeat_counter-- == 0) {
-                    state.program_counter = &program_code[top.return_address];
-                    state.call_stack.pop();
+                    state.program_counter = top.return_address;
+                    state.call_stack.pop_back();
                 } else {
-                    state.program_counter = &program_code[top.loop_address];
+                    state.program_counter = top.loop_address;
                 }
 
                 // TODO: Is "trying again" accurate to hardware?
@@ -88,17 +87,16 @@ static void ProcessShaderCode(VertexShaderState& state) {
         }
 
         bool exit_loop = false;
-        const Instruction& instr = *(const Instruction*)state.program_counter;
-        const SwizzlePattern& swizzle = *(SwizzlePattern*)&swizzle_data[instr.common.operand_desc_id];
+        const Instruction instr = { program_code[state.program_counter] };
+        const SwizzlePattern swizzle = { swizzle_data[instr.common.operand_desc_id] };
 
-        static auto call = [&program_code](VertexShaderState& state, u32 offset, u32 num_instructions,
+        static auto call = [](VertexShaderState& state, u32 offset, u32 num_instructions,
                               u32 return_offset, u8 repeat_count, u8 loop_increment) {
-            state.program_counter = &program_code[offset] - 1; // -1 to make sure when incrementing the PC we end up at the correct offset
-            state.call_stack.push({ offset + num_instructions, return_offset, repeat_count, loop_increment, offset });
+            state.program_counter = offset - 1; // -1 to make sure when incrementing the PC we end up at the correct offset
+            ASSERT(state.call_stack.size() < state.call_stack.capacity());
+            state.call_stack.push_back({ offset + num_instructions, return_offset, repeat_count, loop_increment, offset });
         };
-        u32 binary_offset = state.program_counter - program_code.data();
-
-        state.debug.max_offset = std::max<u32>(state.debug.max_offset, 1 + binary_offset);
+        state.debug.max_offset = std::max<u32>(state.debug.max_offset, 1 + state.program_counter);
 
         auto LookupSourceRegister = [&](const SourceRegister& source_reg) -> const float24* {
             switch (source_reg.GetRegisterType()) {
@@ -221,7 +219,7 @@ static void ProcessShaderCode(VertexShaderState& state) {
                 for (int i = 0; i < num_components; ++i)
                     dot = dot + src1[i] * src2[i];
 
-                for (int i = 0; i < num_components; ++i) {
+                for (int i = 0; i < 4; ++i) {
                     if (!swizzle.DestComponentEnabled(i))
                         continue;
 
@@ -442,13 +440,13 @@ static void ProcessShaderCode(VertexShaderState& state) {
 
             case OpCode::Id::JMPC:
                 if (evaluate_condition(state, instr.flow_control.refx, instr.flow_control.refy, instr.flow_control)) {
-                    state.program_counter = &program_code[instr.flow_control.dest_offset] - 1;
+                    state.program_counter = instr.flow_control.dest_offset - 1;
                 }
                 break;
 
             case OpCode::Id::JMPU:
                 if (uniforms.b[instr.flow_control.bool_uniform_id]) {
-                    state.program_counter = &program_code[instr.flow_control.dest_offset] - 1;
+                    state.program_counter = instr.flow_control.dest_offset - 1;
                 }
                 break;
 
@@ -456,7 +454,7 @@ static void ProcessShaderCode(VertexShaderState& state) {
                 call(state,
                      instr.flow_control.dest_offset,
                      instr.flow_control.num_instructions,
-                     binary_offset + 1, 0, 0);
+                     state.program_counter + 1, 0, 0);
                 break;
 
             case OpCode::Id::CALLU:
@@ -464,7 +462,7 @@ static void ProcessShaderCode(VertexShaderState& state) {
                     call(state,
                         instr.flow_control.dest_offset,
                         instr.flow_control.num_instructions,
-                        binary_offset + 1, 0, 0);
+                        state.program_counter + 1, 0, 0);
                 }
                 break;
 
@@ -473,7 +471,7 @@ static void ProcessShaderCode(VertexShaderState& state) {
                     call(state,
                         instr.flow_control.dest_offset,
                         instr.flow_control.num_instructions,
-                        binary_offset + 1, 0, 0);
+                        state.program_counter + 1, 0, 0);
                 }
                 break;
 
@@ -483,8 +481,8 @@ static void ProcessShaderCode(VertexShaderState& state) {
             case OpCode::Id::IFU:
                 if (uniforms.b[instr.flow_control.bool_uniform_id]) {
                     call(state,
-                         binary_offset + 1,
-                         instr.flow_control.dest_offset - binary_offset - 1,
+                         state.program_counter + 1,
+                         instr.flow_control.dest_offset - state.program_counter - 1,
                          instr.flow_control.dest_offset + instr.flow_control.num_instructions, 0, 0);
                 } else {
                     call(state,
@@ -501,8 +499,8 @@ static void ProcessShaderCode(VertexShaderState& state) {
 
                 if (evaluate_condition(state, instr.flow_control.refx, instr.flow_control.refy, instr.flow_control)) {
                     call(state,
-                         binary_offset + 1,
-                         instr.flow_control.dest_offset - binary_offset - 1,
+                         state.program_counter + 1,
+                         instr.flow_control.dest_offset - state.program_counter - 1,
                          instr.flow_control.dest_offset + instr.flow_control.num_instructions, 0, 0);
                 } else {
                     call(state,
@@ -519,8 +517,8 @@ static void ProcessShaderCode(VertexShaderState& state) {
                 state.address_registers[2] = uniforms.i[instr.flow_control.int_uniform_id].y;
 
                 call(state,
-                     binary_offset + 1,
-                     instr.flow_control.dest_offset - binary_offset + 1,
+                     state.program_counter + 1,
+                     instr.flow_control.dest_offset - state.program_counter + 1,
                      instr.flow_control.dest_offset + 1,
                      uniforms.i[instr.flow_control.int_uniform_id].x,
                      uniforms.i[instr.flow_control.int_uniform_id].z);
@@ -546,20 +544,17 @@ static void ProcessShaderCode(VertexShaderState& state) {
 
 static Common::Profiling::TimingCategory shader_category("Vertex Shader");
 
-OutputVertex RunShader(const InputVertex& input, int num_attributes) {
+OutputVertex RunShader(const InputVertex& input, int num_attributes, const Regs::ShaderConfig& config, const State::ShaderSetup& setup) {
     Common::Profiling::ScopeTimer timer(shader_category);
 
-    const auto& regs = g_state.regs;
-    const auto& vs = g_state.vs;
     VertexShaderState state;
 
-    const u32* main = &vs.program_code[regs.vs_main_offset];
-    state.program_counter = (u32*)main;
+    state.program_counter = config.main_offset;
     state.debug.max_offset = 0;
     state.debug.max_opdesc_id = 0;
 
     // Setup input register table
-    const auto& attribute_register_map = regs.vs_input_register_map;
+    const auto& attribute_register_map = config.input_register_map;
     float24 dummy_register;
     boost::fill(state.input_register_table, &dummy_register);
 
@@ -584,16 +579,18 @@ OutputVertex RunShader(const InputVertex& input, int num_attributes) {
     state.conditional_code[1] = false;
 
     ProcessShaderCode(state);
-    DebugUtils::DumpShader(vs.program_code.data(), state.debug.max_offset, vs.swizzle_data.data(),
-                           state.debug.max_opdesc_id, regs.vs_main_offset,
-                           regs.vs_output_attributes);
+#if PICA_DUMP_SHADERS
+    DebugUtils::DumpShader(setup.program_code.data(), state.debug.max_offset, setup.swizzle_data.data(),
+                           state.debug.max_opdesc_id, config.main_offset,
+                           g_state.regs.vs_output_attributes); // TODO: Don't hardcode VS here
+#endif
 
     // Setup output data
     OutputVertex ret;
     // TODO(neobrain): Under some circumstances, up to 16 attributes may be output. We need to
     // figure out what those circumstances are and enable the remaining outputs then.
     for (int i = 0; i < 7; ++i) {
-        const auto& output_register_map = regs.vs_output_attributes[i];
+        const auto& output_register_map = g_state.regs.vs_output_attributes[i]; // TODO: Don't hardcode VS here
 
         u32 semantics[4] = {
             output_register_map.map_x, output_register_map.map_y,
@@ -610,6 +607,12 @@ OutputVertex RunShader(const InputVertex& input, int num_attributes) {
                 memset(out, 0, sizeof(*out));
             }
         }
+    }
+
+    // The hardware takes the absolute and saturates vertex colors like this, *before* doing interpolation
+    for (int i = 0; i < 4; ++i) {
+        ret.color[i] = float24::FromFloat32(
+            std::fmin(std::fabs(ret.color[i].ToFloat32()), 1.0f));
     }
 
     LOG_TRACE(Render_Software, "Output vertex: pos (%.2f, %.2f, %.2f, %.2f), col(%.2f, %.2f, %.2f, %.2f), tc0(%.2f, %.2f)",

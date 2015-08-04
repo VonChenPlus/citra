@@ -20,35 +20,30 @@
 
 /* Note: this file handles interface with arm core and vfp registers */
 
+#include "common/common_funcs.h"
 #include "common/logging/log.h"
 
-#include "core/arm/skyeye_common/armdefs.h"
+#include "core/arm/skyeye_common/armstate.h"
 #include "core/arm/skyeye_common/vfp/asm_vfp.h"
 #include "core/arm/skyeye_common/vfp/vfp.h"
 
-unsigned VFPInit(ARMul_State* state)
+void VFPInit(ARMul_State* state)
 {
     state->VFP[VFP_FPSID] = VFP_FPSID_IMPLMEN<<24 | VFP_FPSID_SW<<23 | VFP_FPSID_SUBARCH<<16 |
                             VFP_FPSID_PARTNUM<<8 | VFP_FPSID_VARIANT<<4 | VFP_FPSID_REVISION;
     state->VFP[VFP_FPEXC] = 0;
     state->VFP[VFP_FPSCR] = 0;
 
-    return 0;
+    // ARM11 MPCore instruction register reset values.
+    state->VFP[VFP_FPINST]  = 0xEE000A00;
+    state->VFP[VFP_FPINST2] = 0;
+
+    // ARM11 MPCore feature register values.
+    state->VFP[VFP_MVFR0] = 0x11111111;
+    state->VFP[VFP_MVFR1] = 0;
 }
 
-void VMSR(ARMul_State* state, ARMword reg, ARMword Rt)
-{
-    if (reg == 1)
-    {
-        state->VFP[VFP_FPSCR] = state->Reg[Rt];
-    }
-    else if (reg == 8)
-    {
-        state->VFP[VFP_FPEXC] = state->Reg[Rt];
-    }
-}
-
-void VMOVBRS(ARMul_State* state, ARMword to_arm, ARMword t, ARMword n, ARMword* value)
+void VMOVBRS(ARMul_State* state, u32 to_arm, u32 t, u32 n, u32* value)
 {
     if (to_arm)
     {
@@ -60,7 +55,7 @@ void VMOVBRS(ARMul_State* state, ARMword to_arm, ARMword t, ARMword n, ARMword* 
     }
 }
 
-void VMOVBRRD(ARMul_State* state, ARMword to_arm, ARMword t, ARMword t2, ARMword n, ARMword* value1, ARMword* value2)
+void VMOVBRRD(ARMul_State* state, u32 to_arm, u32 t, u32 t2, u32 n, u32* value1, u32* value2)
 {
     if (to_arm)
     {
@@ -73,7 +68,7 @@ void VMOVBRRD(ARMul_State* state, ARMword to_arm, ARMword t, ARMword t2, ARMword
         state->ExtReg[n*2] = *value1;
     }
 }
-void VMOVBRRSS(ARMul_State* state, ARMword to_arm, ARMword t, ARMword t2, ARMword n, ARMword* value1, ARMword* value2)
+void VMOVBRRSS(ARMul_State* state, u32 to_arm, u32 t, u32 t2, u32 n, u32* value1, u32* value2)
 {
     if (to_arm)
     {
@@ -87,7 +82,7 @@ void VMOVBRRSS(ARMul_State* state, ARMword to_arm, ARMword t, ARMword t2, ARMwor
     }
 }
 
-void VMOVI(ARMul_State* state, ARMword single, ARMword d, ARMword imm)
+void VMOVI(ARMul_State* state, u32 single, u32 d, u32 imm)
 {
     if (single)
     {
@@ -100,7 +95,7 @@ void VMOVI(ARMul_State* state, ARMword single, ARMword d, ARMword imm)
         state->ExtReg[d*2] = 0;
     }
 }
-void VMOVR(ARMul_State* state, ARMword single, ARMword d, ARMword m)
+void VMOVR(ARMul_State* state, u32 single, u32 d, u32 m)
 {
     if (single)
     {
@@ -149,9 +144,8 @@ void vfp_raise_exceptions(ARMul_State* state, u32 exceptions, u32 inst, u32 fpsc
     LOG_TRACE(Core_ARM11, "VFP: raising exceptions %08x\n", exceptions);
 
     if (exceptions == VFP_EXCEPTION_ERROR) {
-        LOG_TRACE(Core_ARM11, "unhandled bounce %x\n", inst);
-        exit(-1);
-        return;
+        LOG_CRITICAL(Core_ARM11, "unhandled bounce %x\n", inst);
+        Crash();
     }
 
     /*

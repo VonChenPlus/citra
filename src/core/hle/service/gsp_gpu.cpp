@@ -9,13 +9,16 @@
 #include "core/hle/kernel/event.h"
 #include "core/hle/kernel/shared_memory.h"
 #include "core/hle/result.h"
-#include "gsp_gpu.h"
 #include "core/hw/hw.h"
 #include "core/hw/gpu.h"
 #include "core/hw/lcd.h"
 
 #include "video_core/gpu_debugger.h"
+#include "video_core/debug_utils/debug_utils.h"
+#include "video_core/renderer_base.h"
 #include "video_core/video_core.h"
+
+#include "gsp_gpu.h"
 
 // Main graphics debugger object - TODO: Here is probably not the best place for this
 GraphicsDebugger g_debugger;
@@ -40,7 +43,7 @@ static inline u8* GetCommandBuffer(u32 thread_id) {
     return g_shared_memory->GetPointer(0x800 + (thread_id * sizeof(CommandBuffer)));
 }
 
-static inline FrameBufferUpdate* GetFrameBufferInfo(u32 thread_id, u32 screen_index) {
+FrameBufferUpdate* GetFrameBufferInfo(u32 thread_id, u32 screen_index) {
     DEBUG_ASSERT_MSG(screen_index < 2, "Invalid screen index");
 
     // For each thread there are two FrameBufferUpdate fields
@@ -203,7 +206,7 @@ static void ReadHWRegs(Service::Interface* self) {
     }
 }
 
-static void SetBufferSwap(u32 screen_id, const FrameBufferInfo& info) {
+void SetBufferSwap(u32 screen_id, const FrameBufferInfo& info) {
     u32 base_address = 0x400000;
     PAddr phys_address_left = Memory::VirtualToPhysicalAddress(info.address_left);
     PAddr phys_address_right = Memory::VirtualToPhysicalAddress(info.address_right);
@@ -224,6 +227,9 @@ static void SetBufferSwap(u32 screen_id, const FrameBufferInfo& info) {
             &info.format);
     WriteHWRegs(base_address + 4 * static_cast<u32>(GPU_REG_INDEX(framebuffer_config[screen_id].active_fb)), 4,
             &info.shown_fb);
+
+    if (Pica::g_debug_context)
+        Pica::g_debug_context->OnEvent(Pica::DebugContext::Event::BufferSwapped, nullptr);
 }
 
 /**
@@ -347,7 +353,7 @@ void SignalInterrupt(InterruptId interrupt_id) {
 /// Executes the next GSP command
 static void ExecuteCommand(const Command& command, u32 thread_id) {
     // Utility function to convert register ID to address
-    auto WriteGPURegister = [](u32 id, u32 data) {
+    static auto WriteGPURegister = [](u32 id, u32 data) {
         GPU::Write<u32>(0x1EF00000 + 4 * id, data);
     };
 
@@ -389,19 +395,24 @@ static void ExecuteCommand(const Command& command, u32 thread_id) {
     case CommandId::SET_MEMORY_FILL:
     {
         auto& params = command.memory_fill;
-        WriteGPURegister(static_cast<u32>(GPU_REG_INDEX(memory_fill_config[0].address_start)),
-                         Memory::VirtualToPhysicalAddress(params.start1) >> 3);
-        WriteGPURegister(static_cast<u32>(GPU_REG_INDEX(memory_fill_config[0].address_end)),
-                         Memory::VirtualToPhysicalAddress(params.end1) >> 3);
-        WriteGPURegister(static_cast<u32>(GPU_REG_INDEX(memory_fill_config[0].value_32bit)), params.value1);
-        WriteGPURegister(static_cast<u32>(GPU_REG_INDEX(memory_fill_config[0].control)), params.control1);
 
-        WriteGPURegister(static_cast<u32>(GPU_REG_INDEX(memory_fill_config[1].address_start)),
-                         Memory::VirtualToPhysicalAddress(params.start2) >> 3);
-        WriteGPURegister(static_cast<u32>(GPU_REG_INDEX(memory_fill_config[1].address_end)),
-                         Memory::VirtualToPhysicalAddress(params.end2) >> 3);
-        WriteGPURegister(static_cast<u32>(GPU_REG_INDEX(memory_fill_config[1].value_32bit)), params.value2);
-        WriteGPURegister(static_cast<u32>(GPU_REG_INDEX(memory_fill_config[1].control)), params.control2);
+        if (params.start1 != 0) {
+            WriteGPURegister(static_cast<u32>(GPU_REG_INDEX(memory_fill_config[0].address_start)),
+                    Memory::VirtualToPhysicalAddress(params.start1) >> 3);
+            WriteGPURegister(static_cast<u32>(GPU_REG_INDEX(memory_fill_config[0].address_end)),
+                    Memory::VirtualToPhysicalAddress(params.end1) >> 3);
+            WriteGPURegister(static_cast<u32>(GPU_REG_INDEX(memory_fill_config[0].value_32bit)), params.value1);
+            WriteGPURegister(static_cast<u32>(GPU_REG_INDEX(memory_fill_config[0].control)), params.control1);
+        }
+
+        if (params.start2 != 0) {
+            WriteGPURegister(static_cast<u32>(GPU_REG_INDEX(memory_fill_config[1].address_start)),
+                    Memory::VirtualToPhysicalAddress(params.start2) >> 3);
+            WriteGPURegister(static_cast<u32>(GPU_REG_INDEX(memory_fill_config[1].address_end)),
+                    Memory::VirtualToPhysicalAddress(params.end2) >> 3);
+            WriteGPURegister(static_cast<u32>(GPU_REG_INDEX(memory_fill_config[1].value_32bit)), params.value2);
+            WriteGPURegister(static_cast<u32>(GPU_REG_INDEX(memory_fill_config[1].control)), params.control2);
+        }
         break;
     }
 
@@ -446,6 +457,9 @@ static void ExecuteCommand(const Command& command, u32 thread_id) {
     default:
         LOG_ERROR(Service_GSP, "unknown command 0x%08X", (int)command.id.Value());
     }
+
+    if (Pica::g_debug_context)
+        Pica::g_debug_context->OnEvent(Pica::DebugContext::Event::GSPCommandProcessed, (void*)&command);
 }
 
 /**
@@ -582,13 +596,18 @@ const Interface::FunctionInfo FunctionTable[] = {
 Interface::Interface() {
     Register(FunctionTable);
 
-    g_interrupt_event = 0;
+    g_interrupt_event = nullptr;
 
     using Kernel::MemoryPermission;
     g_shared_memory = Kernel::SharedMemory::Create(0x1000, MemoryPermission::ReadWrite,
             MemoryPermission::ReadWrite, "GSPSharedMem");
 
     g_thread_id = 0;
+}
+
+Interface::~Interface() {
+    g_interrupt_event = nullptr;
+    g_shared_memory = nullptr;
 }
 
 } // namespace

@@ -115,7 +115,8 @@ static void OpenFileDirectly(Service::Interface* self) {
 
     ResultVal<ArchiveHandle> archive_handle = OpenArchive(archive_id, archive_path);
     if (archive_handle.Failed()) {
-        LOG_ERROR(Service_FS, "failed to get a handle for archive");
+        LOG_ERROR(Service_FS, "failed to get a handle for archive archive_id=0x%08X archive_path=%s",
+                  archive_id, archive_path.DebugStr().c_str());
         cmd_buff[1] = archive_handle.Code().raw;
         cmd_buff[3] = 0;
         return;
@@ -128,7 +129,8 @@ static void OpenFileDirectly(Service::Interface* self) {
         cmd_buff[3] = Kernel::g_handle_table.Create(*file_res).MoveFrom();
     } else {
         cmd_buff[3] = 0;
-        LOG_ERROR(Service_FS, "failed to get a handle for file %s", file_path.DebugStr().c_str());
+        LOG_ERROR(Service_FS, "failed to get a handle for file %s mode=%u attributes=%d",
+                  file_path.DebugStr().c_str(), mode.hex, attributes);
     }
 }
 
@@ -347,7 +349,8 @@ static void OpenDirectory(Service::Interface* self) {
     if (dir_res.Succeeded()) {
         cmd_buff[3] = Kernel::g_handle_table.Create(*dir_res).MoveFrom();
     } else {
-        LOG_ERROR(Service_FS, "failed to get a handle for directory");
+        LOG_ERROR(Service_FS, "failed to get a handle for directory type=%d size=%d data=%s",
+                  dirname_type, dirname_size, dir_path.DebugStr().c_str());
     }
 }
 
@@ -382,7 +385,8 @@ static void OpenArchive(Service::Interface* self) {
         cmd_buff[3] = (*handle >> 32) & 0xFFFFFFFF;
     } else {
         cmd_buff[2] = cmd_buff[3] = 0;
-        LOG_ERROR(Service_FS, "failed to get a handle for archive");
+        LOG_ERROR(Service_FS, "failed to get a handle for archive archive_id=0x%08X archive_path=%s",
+                  archive_id, archive_path.DebugStr().c_str());
     }
 }
 
@@ -504,9 +508,9 @@ static void FormatThisUserSaveData(Service::Interface* self) {
  *      6 : Unknown
  *      7 : Unknown
  *      8 : Unknown
- *      9 : Unknown
- *      10: Unknown
- *      11: Unknown
+ *      9 : Size of the SMDH icon
+ *      10: (SMDH Size << 4) | 0x0000000A
+ *      11: Pointer to the SMDH icon for the new ExtSaveData
  *  Outputs:
  *      1 : Result of function, 0 on success, otherwise error code
  */
@@ -516,14 +520,16 @@ static void CreateExtSaveData(Service::Interface* self) {
     MediaType media_type = static_cast<MediaType>(cmd_buff[1] & 0xFF);
     u32 save_low = cmd_buff[2];
     u32 save_high = cmd_buff[3];
+    u32 icon_size = cmd_buff[9];
+    VAddr icon_buffer = cmd_buff[11];
 
     LOG_WARNING(Service_FS, "(STUBBED) savedata_high=%08X savedata_low=%08X cmd_buff[3]=%08X "
             "cmd_buff[4]=%08X cmd_buff[5]=%08X cmd_buff[6]=%08X cmd_buff[7]=%08X cmd_buff[8]=%08X "
-            "cmd_buff[9]=%08X cmd_buff[10]=%08X cmd_buff[11]=%08X", save_high, save_low,
-            cmd_buff[3], cmd_buff[4], cmd_buff[5], cmd_buff[6], cmd_buff[7], cmd_buff[8], cmd_buff[9],
-            cmd_buff[10], cmd_buff[11]);
+            "icon_size=%08X icon_descriptor=%08X icon_buffer=%08X", save_high, save_low,
+            cmd_buff[3], cmd_buff[4], cmd_buff[5], cmd_buff[6], cmd_buff[7], cmd_buff[8], icon_size,
+            cmd_buff[10], icon_buffer);
 
-    cmd_buff[1] = CreateExtSaveData(media_type, save_high, save_low).raw;
+    cmd_buff[1] = CreateExtSaveData(media_type, save_high, save_low, icon_buffer, icon_size).raw;
 }
 
 /**

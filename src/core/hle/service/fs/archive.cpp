@@ -2,29 +2,35 @@
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
+#include <cstddef>
+#include <system_error>
+#include <type_traits>
 #include <memory>
 #include <unordered_map>
+#include <utility>
 
 #include <boost/container/flat_map.hpp>
 
+#include "common/assert.h"
 #include "common/common_types.h"
 #include "common/file_util.h"
 #include "common/logging/log.h"
 #include "common/make_unique.h"
-#include "common/math_util.h"
 
 #include "core/file_sys/archive_backend.h"
 #include "core/file_sys/archive_extsavedata.h"
-#include "core/file_sys/archive_romfs.h"
 #include "core/file_sys/archive_savedata.h"
 #include "core/file_sys/archive_savedatacheck.h"
 #include "core/file_sys/archive_sdmc.h"
 #include "core/file_sys/archive_systemsavedata.h"
 #include "core/file_sys/directory_backend.h"
+#include "core/file_sys/file_backend.h"
+#include "core/hle/hle.h"
 #include "core/hle/service/service.h"
 #include "core/hle/service/fs/archive.h"
 #include "core/hle/service/fs/fs_user.h"
 #include "core/hle/result.h"
+#include "core/memory.h"
 
 // Specializes std::hash for ArchiveIdCode, so that we can use it in std::unordered_map.
 // Workaroung for libstdc++ bug: https://gcc.gnu.org/bugzilla/show_bug.cgi?id=60970
@@ -110,7 +116,7 @@ ResultVal<bool> File::SyncRequest() {
             u32 address = cmd_buff[6];
             LOG_TRACE(Service_FS, "Write %s %s: offset=0x%llx length=%d address=0x%x, flush=0x%x",
                       GetTypeName().c_str(), GetName().c_str(), offset, length, address, flush);
-            cmd_buff[2] = static_cast<u32>(backend->Write(offset, length, flush, Memory::GetPointer(address)));
+            cmd_buff[2] = static_cast<u32>(backend->Write(offset, length, flush != 0, Memory::GetPointer(address)));
             break;
         }
 
@@ -406,7 +412,7 @@ ResultCode FormatArchive(ArchiveIdCode id_code, const FileSys::Path& path) {
     return archive_itr->second->Format(path);
 }
 
-ResultCode CreateExtSaveData(MediaType media_type, u32 high, u32 low) {
+ResultCode CreateExtSaveData(MediaType media_type, u32 high, u32 low, VAddr icon_buffer, u32 icon_size) {
     // Construct the binary path to the archive first
     FileSys::Path path = FileSys::ConstructExtDataBinaryPath(static_cast<u32>(media_type), high, low);
 
@@ -421,9 +427,25 @@ ResultCode CreateExtSaveData(MediaType media_type, u32 high, u32 low) {
     }
 
     std::string base_path = FileSys::GetExtDataContainerPath(media_type_directory, media_type == MediaType::NAND);
-    std::string extsavedata_path = FileSys::GetExtSaveDataPath(base_path, path);
-    if (!FileUtil::CreateFullPath(extsavedata_path))
+    std::string game_path = FileSys::GetExtSaveDataPath(base_path, path);
+    // These two folders are always created with the ExtSaveData
+    std::string user_path = game_path + "user/";
+    std::string boss_path = game_path + "boss/";
+    if (!FileUtil::CreateFullPath(user_path))
         return ResultCode(-1); // TODO(Subv): Find the right error code
+    if (!FileUtil::CreateFullPath(boss_path))
+        return ResultCode(-1); // TODO(Subv): Find the right error code
+
+    u8* smdh_icon = Memory::GetPointer(icon_buffer);
+    if (!smdh_icon)
+        return ResultCode(-1); // TODO(Subv): Find the right error code
+
+    // Create the icon
+    FileUtil::IOFile icon_file(game_path + "icon", "wb+");
+    if (!icon_file.IsGood())
+        return ResultCode(-1); // TODO(Subv): Find the right error code
+
+    icon_file.WriteBytes(smdh_icon, icon_size);
     return RESULT_SUCCESS;
 }
 
@@ -441,6 +463,7 @@ ResultCode DeleteExtSaveData(MediaType media_type, u32 high, u32 low) {
         return ResultCode(-1); // TODO(Subv): Find the right error code
     }
 
+    // Delete all directories (/user, /boss) and the icon file.
     std::string base_path = FileSys::GetExtDataContainerPath(media_type_directory, media_type == MediaType::NAND);
     std::string extsavedata_path = FileSys::GetExtSaveDataPath(base_path, path);
     if (!FileUtil::DeleteDirRecursively(extsavedata_path))

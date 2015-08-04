@@ -7,8 +7,6 @@
 #include "common/assert.h"
 #include "common/logging/log.h"
 
-#include "core/arm/arm_interface.h"
-#include "core/core.h"
 #include "core/hle/kernel/kernel.h"
 #include "core/hle/kernel/resource_limit.h"
 #include "core/hle/kernel/process.h"
@@ -32,27 +30,13 @@ void WaitObject::RemoveWaitingThread(Thread* thread) {
         waiting_threads.erase(itr);
 }
 
-SharedPtr<Thread> WaitObject::WakeupNextThread() {
-    if (waiting_threads.empty())
-        return nullptr;
-
-    auto next_thread = std::move(waiting_threads.front());
-    waiting_threads.erase(waiting_threads.begin());
-
-    next_thread->ReleaseWaitObject(this);
-
-    return next_thread;
-}
-
 void WaitObject::WakeupAllWaitingThreads() {
-    auto waiting_threads_copy = waiting_threads;
+    for (auto thread : waiting_threads)
+        thread->ResumeFromWait();
 
-    // We use a copy because ReleaseWaitObject will remove the thread from this object's
-    // waiting_threads list
-    for (auto thread : waiting_threads_copy)
-        thread->ReleaseWaitObject(this);
+    waiting_threads.clear();
 
-    ASSERT_MSG(waiting_threads.empty(), "failed to awaken all waiting threads!");
+    HLE::Reschedule(__func__);
 }
 
 HandleTable::HandleTable() {

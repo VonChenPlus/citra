@@ -22,12 +22,11 @@
 
 #include "core/arm/skyeye_common/vfp/vfp_helper.h" /* for references to cdp SoftFloat functions */
 
-#define VFP_DEBUG_UNIMPLEMENTED(x) LOG_ERROR(Core_ARM11, "in func %s, " #x " unimplemented\n", __FUNCTION__); exit(-1);
 #define VFP_DEBUG_UNTESTED(x) LOG_TRACE(Core_ARM11, "in func %s, " #x " untested\n", __FUNCTION__);
 #define CHECK_VFP_ENABLED
 #define CHECK_VFP_CDP_RET vfp_raise_exceptions(cpu, ret, inst_cream->instr, cpu->VFP[VFP_FPSCR]);
 
-unsigned VFPInit(ARMul_State* state);
+void VFPInit(ARMul_State* state);
 
 s32 vfp_get_float(ARMul_State* state, u32 reg);
 void vfp_put_float(ARMul_State* state, s32 val, u32 reg);
@@ -37,10 +36,8 @@ void vfp_raise_exceptions(ARMul_State* state, u32 exceptions, u32 inst, u32 fpsc
 u32 vfp_single_cpdo(ARMul_State* state, u32 inst, u32 fpscr);
 u32 vfp_double_cpdo(ARMul_State* state, u32 inst, u32 fpscr);
 
-void VMSR(ARMul_State* state, ARMword reg, ARMword Rt);
-void VMOVBRS(ARMul_State* state, ARMword to_arm, ARMword t, ARMword n, ARMword* value);
-void VMOVBRRD(ARMul_State* state, ARMword to_arm, ARMword t, ARMword t2, ARMword n, ARMword* value1, ARMword* value2);
-void VMOVBRRSS(ARMul_State* state, ARMword to_arm, ARMword t, ARMword t2, ARMword n, ARMword* value1, ARMword* value2);
-void VMOVI(ARMul_State* state, ARMword single, ARMword d, ARMword imm);
-void VMOVR(ARMul_State* state, ARMword single, ARMword d, ARMword imm);
-
+void VMOVBRS(ARMul_State* state, u32 to_arm, u32 t, u32 n, u32* value);
+void VMOVBRRD(ARMul_State* state, u32 to_arm, u32 t, u32 t2, u32 n, u32* value1, u32* value2);
+void VMOVBRRSS(ARMul_State* state, u32 to_arm, u32 t, u32 t2, u32 n, u32* value1, u32* value2);
+void VMOVI(ARMul_State* state, u32 single, u32 d, u32 imm);
+void VMOVR(ARMul_State* state, u32 single, u32 d, u32 imm);

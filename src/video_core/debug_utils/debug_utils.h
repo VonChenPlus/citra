@@ -14,6 +14,8 @@
 
 #include "common/vector_math.h"
 
+#include "core/tracer/recorder.h"
+
 #include "video_core/pica.h"
 
 namespace Pica {
@@ -23,11 +25,14 @@ public:
     enum class Event {
         FirstEvent = 0,
 
-        CommandLoaded = FirstEvent,
-        CommandProcessed,
+        PicaCommandLoaded = FirstEvent,
+        PicaCommandProcessed,
         IncomingPrimitiveBatch,
         FinishedPrimitiveBatch,
         VertexLoaded,
+        IncomingDisplayTransfer,
+        GSPCommandProcessed,
+        BufferSwapped,
 
         NumEvents
     };
@@ -129,6 +134,8 @@ public:
     Event active_breakpoint;
     bool at_breakpoint = false;
 
+    std::shared_ptr<CiTrace::Recorder> recorder = nullptr;
+
 private:
     /**
      * Private default constructor to make sure people always construct this through Construct()
@@ -149,6 +156,11 @@ private:
 extern std::shared_ptr<DebugContext> g_debug_context; // TODO: Get rid of this global
 
 namespace DebugUtils {
+
+#define PICA_DUMP_GEOMETRY 0
+#define PICA_DUMP_SHADERS 0
+#define PICA_DUMP_TEXTURES 0
+#define PICA_LOG_TEV 0
 
 // Simple utility class for dumping geometry data to an OBJ file
 class GeometryDumper {

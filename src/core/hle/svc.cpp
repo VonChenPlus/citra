@@ -22,6 +22,7 @@
 #include "core/hle/kernel/shared_memory.h"
 #include "core/hle/kernel/thread.h"
 #include "core/hle/kernel/timer.h"
+#include "core/hle/kernel/vm_manager.h"
 
 #include "core/hle/function_wrappers.h"
 #include "core/hle/result.h"
@@ -39,9 +40,6 @@ const ResultCode ERR_NOT_FOUND(ErrorDescription::NotFound, ErrorModule::Kernel,
         ErrorSummary::NotFound, ErrorLevel::Permanent); // 0xD88007FA
 const ResultCode ERR_PORT_NAME_TOO_LONG(ErrorDescription(30), ErrorModule::OS,
         ErrorSummary::InvalidArgument, ErrorLevel::Usage); // 0xE0E0181E
-
-/// An invalid result code that is meant to be overwritten when a thread resumes from waiting
-const ResultCode RESULT_INVALID(0xDEADC0DE);
 
 enum ControlMemoryOperation {
     MEMORY_OPERATION_HEAP       = 0x00000003,
@@ -143,6 +141,10 @@ static ResultCode CloseHandle(Handle handle) {
 /// Wait for a handle to synchronize, timeout after the specified nanoseconds
 static ResultCode WaitSynchronization1(Handle handle, s64 nano_seconds) {
     auto object = Kernel::g_handle_table.GetWaitObject(handle);
+    Kernel::Thread* thread = Kernel::GetCurrentThread();
+
+    thread->waitsynch_waited = false;
+
     if (object == nullptr)
         return ERR_INVALID_HANDLE;
 
@@ -154,14 +156,14 @@ static ResultCode WaitSynchronization1(Handle handle, s64 nano_seconds) {
     // Check for next thread to schedule
     if (object->ShouldWait()) {
 
-        object->AddWaitingThread(Kernel::GetCurrentThread());
+        object->AddWaitingThread(thread);
         Kernel::WaitCurrentThread_WaitSynchronization({ object }, false, false);
 
         // Create an event to wake the thread up after the specified nanosecond delay has passed
-        Kernel::GetCurrentThread()->WakeAfterDelay(nano_seconds);
+        thread->WakeAfterDelay(nano_seconds);
 
         // NOTE: output of this SVC will be set later depending on how the thread resumes
-        return RESULT_INVALID;
+        return HLE::RESULT_INVALID;
     }
 
     object->Acquire();
@@ -173,6 +175,9 @@ static ResultCode WaitSynchronization1(Handle handle, s64 nano_seconds) {
 static ResultCode WaitSynchronizationN(s32* out, Handle* handles, s32 handle_count, bool wait_all, s64 nano_seconds) {
     bool wait_thread = !wait_all;
     int handle_index = 0;
+    Kernel::Thread* thread = Kernel::GetCurrentThread();
+    bool was_waiting = thread->waitsynch_waited;
+    thread->waitsynch_waited = false;
 
     // Check if 'handles' is invalid
     if (handles == nullptr)
@@ -190,6 +195,9 @@ static ResultCode WaitSynchronizationN(s32* out, Handle* handles, s32 handle_cou
     // necessary
     if (handle_count != 0) {
         bool selected = false; // True once an object has been selected
+
+        Kernel::SharedPtr<Kernel::WaitObject> wait_object;
+
         for (int i = 0; i < handle_count; ++i) {
             auto object = Kernel::g_handle_table.GetWaitObject(handles[i]);
             if (object == nullptr)
@@ -204,10 +212,11 @@ static ResultCode WaitSynchronizationN(s32* out, Handle* handles, s32 handle_cou
                     wait_thread = true;
             } else {
                 // Do not wait on this object, check if this object should be selected...
-                if (!wait_all && !selected) {
+                if (!wait_all && (!selected || (wait_object == object && was_waiting))) {
                     // Do not wait the thread
                     wait_thread = false;
                     handle_index = i;
+                    wait_object = object;
                     selected = true;
                 }
             }
@@ -241,7 +250,7 @@ static ResultCode WaitSynchronizationN(s32* out, Handle* handles, s32 handle_cou
         Kernel::GetCurrentThread()->WakeAfterDelay(nano_seconds);
 
         // NOTE: output of this SVC will be set later depending on how the thread resumes
-        return RESULT_INVALID;
+        return HLE::RESULT_INVALID;
     }
 
     // Acquire objects if we did not wait...
@@ -261,7 +270,7 @@ static ResultCode WaitSynchronizationN(s32* out, Handle* handles, s32 handle_cou
 
     // TODO(bunnei): If 'wait_all' is true, this is probably wrong. However, real hardware does
     // not seem to set it to any meaningful value.
-    *out = wait_all ? 0 : handle_index;
+    *out = handle_count != 0 ? (wait_all ? -1 : handle_index) : 0;
 
     return RESULT_SUCCESS;
 }
@@ -325,7 +334,7 @@ static ResultCode GetResourceLimit(Handle* resource_limit, Handle process_handle
 
 /// Get resource limit current values
 static ResultCode GetResourceLimitCurrentValues(s64* values, Handle resource_limit_handle, u32* names,
-    s32 name_count) {
+    u32 name_count) {
     LOG_TRACE(Kernel_SVC, "called resource_limit=%08X, names=%p, name_count=%d",
         resource_limit_handle, names, name_count);
 
@@ -341,7 +350,7 @@ static ResultCode GetResourceLimitCurrentValues(s64* values, Handle resource_lim
 
 /// Get resource limit max values
 static ResultCode GetResourceLimitLimitValues(s64* values, Handle resource_limit_handle, u32* names,
-    s32 name_count) {
+    u32 name_count) {
     LOG_TRACE(Kernel_SVC, "called resource_limit=%08X, names=%p, name_count=%d",
         resource_limit_handle, names, name_count);
 
@@ -521,10 +530,31 @@ static ResultCode ReleaseSemaphore(s32* count, Handle handle, s32 release_count)
     return RESULT_SUCCESS;
 }
 
-/// Query memory
-static ResultCode QueryMemory(void* info, void* out, u32 addr) {
-    LOG_ERROR(Kernel_SVC, "(UNIMPLEMENTED) called addr=0x%08X", addr);
+/// Query process memory
+static ResultCode QueryProcessMemory(MemoryInfo* memory_info, PageInfo* page_info, Handle process_handle, u32 addr) {
+    using Kernel::Process;
+    Kernel::SharedPtr<Process> process = Kernel::g_handle_table.Get<Process>(process_handle);
+    if (process == nullptr)
+        return ERR_INVALID_HANDLE;
+
+    auto vma = process->address_space->FindVMA(addr);
+
+    if (vma == process->address_space->vma_map.end())
+        return ResultCode(ErrorDescription::InvalidAddress, ErrorModule::OS, ErrorSummary::InvalidArgument, ErrorLevel::Usage);
+
+    memory_info->base_address = vma->second.base;
+    memory_info->permission = static_cast<u32>(vma->second.permissions);
+    memory_info->size = vma->second.size;
+    memory_info->state = static_cast<u32>(vma->second.meminfo_state);
+
+    page_info->flags = 0;
+    LOG_TRACE(Kernel_SVC, "called process=0x%08X addr=0x%08X", process_handle, addr);
     return RESULT_SUCCESS;
+}
+
+/// Query memory
+static ResultCode QueryMemory(MemoryInfo* memory_info, PageInfo* page_info, u32 addr) {
+    return QueryProcessMemory(memory_info, page_info, Kernel::CurrentProcess, addr);
 }
 
 /// Create an event
@@ -798,13 +828,12 @@ static const FunctionDef SVC_Table[] = {
     {0x7A, nullptr,                         "AddCodeSegment"},
     {0x7B, nullptr,                         "Backdoor"},
     {0x7C, nullptr,                         "KernelSetState"},
-    {0x7D, nullptr,                         "QueryProcessMemory"},
+    {0x7D, HLE::Wrap<QueryProcessMemory>,   "QueryProcessMemory"},
 };
 
 Common::Profiling::TimingCategory profiler_svc("SVC Calls");
 
-static const FunctionDef* GetSVCInfo(u32 opcode) {
-    u32 func_num = opcode & 0xFFFFFF; // 8 bits
+static const FunctionDef* GetSVCInfo(u32 func_num) {
     if (func_num >= ARRAY_SIZE(SVC_Table)) {
         LOG_ERROR(Kernel_SVC, "unknown svc=0x%02X", func_num);
         return nullptr;
@@ -812,10 +841,10 @@ static const FunctionDef* GetSVCInfo(u32 opcode) {
     return &SVC_Table[func_num];
 }
 
-void CallSVC(u32 opcode) {
+void CallSVC(u32 immediate) {
     Common::Profiling::ScopeTimer timer_svc(profiler_svc);
 
-    const FunctionDef *info = GetSVCInfo(opcode);
+    const FunctionDef* info = GetSVCInfo(immediate);
     if (info) {
         if (info->func) {
             info->func();

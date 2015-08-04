@@ -2,6 +2,8 @@
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
+#include <QShortcut>
+
 #include "disassembler.h"
 
 #include "../bootmanager.h"
@@ -13,7 +15,6 @@
 #include "common/break_points.h"
 #include "common/symbols.h"
 #include "core/arm/arm_interface.h"
-#include "core/arm/skyeye_common/armdefs.h"
 #include "core/arm/disassembler/arm_disasm.h"
 
 
@@ -158,7 +159,7 @@ void DisassemblerModel::SetNextInstruction(unsigned int address) {
 }
 
 DisassemblerWidget::DisassemblerWidget(QWidget* parent, EmuThread* emu_thread) :
-    QDockWidget(parent), emu_thread(emu_thread), base_addr(0) {
+    QDockWidget(parent), base_addr(0), emu_thread(emu_thread) {
 
     disasm_ui.setupUi(this);
 
@@ -217,7 +218,7 @@ void DisassemblerWidget::OnToggleStartStop() {
 }
 
 void DisassemblerWidget::OnDebugModeEntered() {
-    ARMword next_instr = Core::g_app_core->GetPC();
+    u32 next_instr = Core::g_app_core->GetPC();
 
     if (model->GetBreakPoints().IsAddressBreakPoint(next_instr))
         emu_thread->SetRunning(false);

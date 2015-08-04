@@ -5,10 +5,9 @@
 #pragma once
 
 #include <array>
+#include <cmath>
 #include <cstddef>
-#include <initializer_list>
-#include <map>
-#include <vector>
+#include <string>
 
 #include "common/assert.h"
 #include "common/bit_field.h"
@@ -114,11 +113,22 @@ struct Regs {
     struct TextureConfig {
         enum WrapMode : u32 {
             ClampToEdge    = 0,
+            ClampToBorder  = 1,
             Repeat         = 2,
             MirroredRepeat = 3,
         };
 
-        INSERT_PADDING_WORDS(0x1);
+        enum TextureFilter : u32 {
+            Nearest = 0,
+            Linear  = 1
+        };
+
+        union {
+            BitField< 0, 8, u32> r;
+            BitField< 8, 8, u32> g;
+            BitField<16, 8, u32> b;
+            BitField<24, 8, u32> a;
+        } border_color;
 
         union {
             BitField< 0, 16, u32> height;
@@ -126,8 +136,10 @@ struct Regs {
         };
 
         union {
-            BitField< 8, 2, WrapMode> wrap_s;
-            BitField<12, 2, WrapMode> wrap_t;
+            BitField< 1, 1, TextureFilter> mag_filter;
+            BitField< 2, 1, TextureFilter> min_filter;
+            BitField< 8, 2, WrapMode> wrap_t;
+            BitField<12, 2, WrapMode> wrap_s;
         };
 
         INSERT_PADDING_WORDS(0x1);
@@ -194,6 +206,7 @@ struct Regs {
         case TextureFormat::IA8:
             return 4;
 
+        case TextureFormat::I4:
         case TextureFormat::A4:
             return 1;
 
@@ -284,6 +297,7 @@ struct Regs {
             AddSigned       = 3,
             Lerp            = 4,
             Subtract        = 5,
+            Dot3_RGB        = 6,
 
             MultiplyThenAdd = 8,
             AddThenMultiply = 9,
@@ -372,9 +386,9 @@ struct Regs {
     INSERT_PADDING_WORDS(0x2);
 
     const std::array<Regs::TevStageConfig,6> GetTevStages() const {
-        return { tev_stage0, tev_stage1,
-                 tev_stage2, tev_stage3,
-                 tev_stage4, tev_stage5 };
+        return {{ tev_stage0, tev_stage1,
+                  tev_stage2, tev_stage3,
+                  tev_stage4, tev_stage5 }};
     };
 
     enum class BlendEquation : u32 {
@@ -414,6 +428,11 @@ struct Regs {
         GreaterThanOrEqual = 7,
     };
 
+    enum class StencilAction : u32 {
+        Keep = 0,
+        Xor  = 5,
+    };
+
     struct {
         union {
             // If false, logic blending is used
@@ -448,15 +467,35 @@ struct Regs {
             BitField< 8, 8, u32> ref;
         } alpha_test;
 
-        union {
-            BitField< 0, 1, u32> stencil_test_enable;
-            BitField< 4, 3, CompareFunc> stencil_test_func;
-            BitField< 8, 8, u32> stencil_replacement_value;
-            BitField<16, 8, u32> stencil_reference_value;
-            BitField<24, 8, u32> stencil_mask;
-        } stencil_test;
+        struct {
+            union {
+                // If true, enable stencil testing
+                BitField< 0, 1, u32> enable;
 
-        INSERT_PADDING_WORDS(0x1);
+                // Comparison operation for stencil testing
+                BitField< 4, 3, CompareFunc> func;
+
+                // Value to calculate the new stencil value from
+                BitField< 8, 8, u32> replacement_value;
+
+                // Value to compare against for stencil testing
+                BitField<16, 8, u32> reference_value;
+
+                // Mask to apply on stencil test inputs
+                BitField<24, 8, u32> mask;
+            };
+
+            union {
+                // Action to perform when the stencil test fails
+                BitField< 0, 3, StencilAction> action_stencil_fail;
+
+                // Action to perform when stencil testing passed but depth testing fails
+                BitField< 4, 3, StencilAction> action_depth_fail;
+
+                // Action to perform when both stencil and depth testing pass
+                BitField< 8, 3, StencilAction> action_depth_pass;
+            };
+        } stencil_test;
 
         union {
             BitField< 0, 1, u32> depth_test_enable;
@@ -506,7 +545,7 @@ struct Regs {
     struct {
         INSERT_PADDING_WORDS(0x6);
 
-        DepthFormat depth_format;
+        DepthFormat depth_format; // TODO: Should be a BitField!
         BitField<16, 3, ColorFormat> color_format;
 
         INSERT_PADDING_WORDS(0x4);
@@ -752,171 +791,123 @@ struct Regs {
     INSERT_PADDING_WORDS(0x20);
 
     enum class TriangleTopology : u32 {
-        List        = 0,
-        Strip       = 1,
-        Fan         = 2,
-        ListIndexed = 3, // TODO: No idea if this is correct
+        List   = 0,
+        Strip  = 1,
+        Fan    = 2,
+        Shader = 3, // Programmable setup unit implemented in a geometry shader
     };
 
     BitField<8, 2, TriangleTopology> triangle_topology;
 
-    INSERT_PADDING_WORDS(0x51);
+    INSERT_PADDING_WORDS(0x21);
 
-    BitField<0, 16, u32> vs_bool_uniforms;
-    union {
-        BitField< 0, 8, u32> x;
-        BitField< 8, 8, u32> y;
-        BitField<16, 8, u32> z;
-        BitField<24, 8, u32> w;
-    } vs_int_uniforms[4];
-
-    INSERT_PADDING_WORDS(0x5);
-
-    // Offset to shader program entry point (in words)
-    BitField<0, 16, u32> vs_main_offset;
-
-    union {
-        BitField< 0, 4, u64> attribute0_register;
-        BitField< 4, 4, u64> attribute1_register;
-        BitField< 8, 4, u64> attribute2_register;
-        BitField<12, 4, u64> attribute3_register;
-        BitField<16, 4, u64> attribute4_register;
-        BitField<20, 4, u64> attribute5_register;
-        BitField<24, 4, u64> attribute6_register;
-        BitField<28, 4, u64> attribute7_register;
-        BitField<32, 4, u64> attribute8_register;
-        BitField<36, 4, u64> attribute9_register;
-        BitField<40, 4, u64> attribute10_register;
-        BitField<44, 4, u64> attribute11_register;
-        BitField<48, 4, u64> attribute12_register;
-        BitField<52, 4, u64> attribute13_register;
-        BitField<56, 4, u64> attribute14_register;
-        BitField<60, 4, u64> attribute15_register;
-
-        int GetRegisterForAttribute(int attribute_index) const {
-            u64 fields[] = {
-                attribute0_register,  attribute1_register,  attribute2_register,  attribute3_register,
-                attribute4_register,  attribute5_register,  attribute6_register,  attribute7_register,
-                attribute8_register,  attribute9_register,  attribute10_register, attribute11_register,
-                attribute12_register, attribute13_register, attribute14_register, attribute15_register,
-            };
-            return (int)fields[attribute_index];
-        }
-    } vs_input_register_map;
-
-    INSERT_PADDING_WORDS(0x3);
-
-    struct {
-        enum Format : u32
-        {
-            FLOAT24 = 0,
-            FLOAT32 = 1
-        };
-
-        bool IsFloat32() const {
-            return format == FLOAT32;
-        }
+    struct ShaderConfig {
+        BitField<0, 16, u32> bool_uniforms;
 
         union {
-            // Index of the next uniform to write to
-            // TODO: ctrulib uses 8 bits for this, however that seems to yield lots of invalid indices
-            BitField<0, 7, u32> index;
+            BitField< 0, 8, u32> x;
+            BitField< 8, 8, u32> y;
+            BitField<16, 8, u32> z;
+            BitField<24, 8, u32> w;
+        } int_uniforms[4];
 
-            BitField<31, 1, Format> format;
-        };
+        INSERT_PADDING_WORDS(0x5);
 
-        // Writing to these registers sets the "current" uniform.
-        // TODO: It's not clear how the hardware stores what the "current" uniform is.
-        u32 set_value[8];
+        // Offset to shader program entry point (in words)
+        BitField<0, 16, u32> main_offset;
 
-    } vs_uniform_setup;
+        union {
+            BitField< 0, 4, u64> attribute0_register;
+            BitField< 4, 4, u64> attribute1_register;
+            BitField< 8, 4, u64> attribute2_register;
+            BitField<12, 4, u64> attribute3_register;
+            BitField<16, 4, u64> attribute4_register;
+            BitField<20, 4, u64> attribute5_register;
+            BitField<24, 4, u64> attribute6_register;
+            BitField<28, 4, u64> attribute7_register;
+            BitField<32, 4, u64> attribute8_register;
+            BitField<36, 4, u64> attribute9_register;
+            BitField<40, 4, u64> attribute10_register;
+            BitField<44, 4, u64> attribute11_register;
+            BitField<48, 4, u64> attribute12_register;
+            BitField<52, 4, u64> attribute13_register;
+            BitField<56, 4, u64> attribute14_register;
+            BitField<60, 4, u64> attribute15_register;
 
-    INSERT_PADDING_WORDS(0x2);
+            int GetRegisterForAttribute(int attribute_index) const {
+                u64 fields[] = {
+                    attribute0_register,  attribute1_register,  attribute2_register,  attribute3_register,
+                    attribute4_register,  attribute5_register,  attribute6_register,  attribute7_register,
+                    attribute8_register,  attribute9_register,  attribute10_register, attribute11_register,
+                    attribute12_register, attribute13_register, attribute14_register, attribute15_register,
+                };
+                return (int)fields[attribute_index];
+            }
+        } input_register_map;
 
-    struct {
-        // Offset of the next instruction to write code to.
-        // Incremented with each instruction write.
-        u32 offset;
+        // OUTMAP_MASK, 0x28E, CODETRANSFER_END
+        INSERT_PADDING_WORDS(0x3);
 
-        // Writing to these registers sets the "current" word in the shader program.
-        // TODO: It's not clear how the hardware stores what the "current" word is.
-        u32 set_word[8];
-    } vs_program;
+        struct {
+            enum Format : u32
+            {
+                FLOAT24 = 0,
+                FLOAT32 = 1
+            };
 
-    INSERT_PADDING_WORDS(0x1);
+            bool IsFloat32() const {
+                return format == FLOAT32;
+            }
 
-    // This register group is used to load an internal table of swizzling patterns,
-    // which are indexed by each shader instruction to specify vector component swizzling.
-    struct {
-        // Offset of the next swizzle pattern to write code to.
-        // Incremented with each instruction write.
-        u32 offset;
+            union {
+                // Index of the next uniform to write to
+                // TODO: ctrulib uses 8 bits for this, however that seems to yield lots of invalid indices
+                // TODO: Maybe the uppermost index is for the geometry shader? Investigate!
+                BitField<0, 7, u32> index;
 
-        // Writing to these registers sets the "current" swizzle pattern in the table.
-        // TODO: It's not clear how the hardware stores what the "current" swizzle pattern is.
-        u32 set_word[8];
-    } vs_swizzle_patterns;
+                BitField<31, 1, Format> format;
+            };
 
-    INSERT_PADDING_WORDS(0x22);
+            // Writing to these registers sets the current uniform.
+            u32 set_value[8];
+
+        } uniform_setup;
+
+        INSERT_PADDING_WORDS(0x2);
+
+        struct {
+            // Offset of the next instruction to write code to.
+            // Incremented with each instruction write.
+            u32 offset;
+
+            // Writing to these registers sets the "current" word in the shader program.
+            u32 set_word[8];
+        } program;
+
+        INSERT_PADDING_WORDS(0x1);
+
+        // This register group is used to load an internal table of swizzling patterns,
+        // which are indexed by each shader instruction to specify vector component swizzling.
+        struct {
+            // Offset of the next swizzle pattern to write code to.
+            // Incremented with each instruction write.
+            u32 offset;
+
+            // Writing to these registers sets the current swizzle pattern in the table.
+            u32 set_word[8];
+        } swizzle_patterns;
+
+        INSERT_PADDING_WORDS(0x2);
+    };
+
+    ShaderConfig gs;
+    ShaderConfig vs;
+
+    INSERT_PADDING_WORDS(0x20);
 
     // Map register indices to names readable by humans
     // Used for debugging purposes, so performance is not an issue here
-    static std::string GetCommandName(int index) {
-        std::map<u32, std::string> map;
-
-        #define ADD_FIELD(name)                                                                               \
-            do {                                                                                              \
-                map.insert({PICA_REG_INDEX(name), #name});                                                    \
-                /* TODO: change to Regs::name when VS2015 and other compilers support it  */                   \
-                for (u32 i = PICA_REG_INDEX(name) + 1; i < PICA_REG_INDEX(name) + sizeof(Regs().name) / 4; ++i) \
-                    map.insert({i, #name + std::string("+") + std::to_string(i-PICA_REG_INDEX(name))});       \
-            } while(false)
-
-        ADD_FIELD(trigger_irq);
-        ADD_FIELD(cull_mode);
-        ADD_FIELD(viewport_size_x);
-        ADD_FIELD(viewport_size_y);
-        ADD_FIELD(viewport_depth_range);
-        ADD_FIELD(viewport_depth_far_plane);
-        ADD_FIELD(viewport_corner);
-        ADD_FIELD(texture0_enable);
-        ADD_FIELD(texture0);
-        ADD_FIELD(texture0_format);
-        ADD_FIELD(texture1);
-        ADD_FIELD(texture1_format);
-        ADD_FIELD(texture2);
-        ADD_FIELD(texture2_format);
-        ADD_FIELD(tev_stage0);
-        ADD_FIELD(tev_stage1);
-        ADD_FIELD(tev_stage2);
-        ADD_FIELD(tev_stage3);
-        ADD_FIELD(tev_combiner_buffer_input);
-        ADD_FIELD(tev_stage4);
-        ADD_FIELD(tev_stage5);
-        ADD_FIELD(tev_combiner_buffer_color);
-        ADD_FIELD(output_merger);
-        ADD_FIELD(framebuffer);
-        ADD_FIELD(vertex_attributes);
-        ADD_FIELD(index_array);
-        ADD_FIELD(num_vertices);
-        ADD_FIELD(trigger_draw);
-        ADD_FIELD(trigger_draw_indexed);
-        ADD_FIELD(vs_default_attributes_setup);
-        ADD_FIELD(command_buffer);
-        ADD_FIELD(triangle_topology);
-        ADD_FIELD(vs_bool_uniforms);
-        ADD_FIELD(vs_int_uniforms);
-        ADD_FIELD(vs_main_offset);
-        ADD_FIELD(vs_input_register_map);
-        ADD_FIELD(vs_uniform_setup);
-        ADD_FIELD(vs_program);
-        ADD_FIELD(vs_swizzle_patterns);
-
-        #undef ADD_FIELD
-
-        // Return empty string if no match is found
-        return map[index];
-    }
+    static std::string GetCommandName(int index);
 
     static inline size_t NumIds() {
         return sizeof(Regs) / sizeof(u32);
@@ -982,16 +973,13 @@ ASSERT_REG_POSITION(trigger_draw_indexed, 0x22f);
 ASSERT_REG_POSITION(vs_default_attributes_setup, 0x232);
 ASSERT_REG_POSITION(command_buffer, 0x238);
 ASSERT_REG_POSITION(triangle_topology, 0x25e);
-ASSERT_REG_POSITION(vs_bool_uniforms, 0x2b0);
-ASSERT_REG_POSITION(vs_int_uniforms, 0x2b1);
-ASSERT_REG_POSITION(vs_main_offset, 0x2ba);
-ASSERT_REG_POSITION(vs_input_register_map, 0x2bb);
-ASSERT_REG_POSITION(vs_uniform_setup, 0x2c0);
-ASSERT_REG_POSITION(vs_program, 0x2cb);
-ASSERT_REG_POSITION(vs_swizzle_patterns, 0x2d5);
+ASSERT_REG_POSITION(gs, 0x280);
+ASSERT_REG_POSITION(vs, 0x2b0);
 
 #undef ASSERT_REG_POSITION
 #endif // !defined(_MSC_VER)
+
+static_assert(sizeof(Regs::ShaderConfig) == 0x30 * sizeof(u32), "ShaderConfig structure has incorrect size");
 
 // The total number of registers is chosen arbitrarily, but let's make sure it's not some odd value anyway.
 static_assert(sizeof(Regs) <= 0x300 * sizeof(u32), "Register set structure larger than it should be");
@@ -1014,7 +1002,7 @@ struct float24 {
             u32 mantissa = hex & 0xFFFF;
             u32 exponent = (hex >> 16) & 0x7F;
             u32 sign = hex >> 23;
-            ret.value = powf(2.0f, (float)exponent-63.0f) * (1.0f + mantissa * powf(2.0f, -16.f));
+            ret.value = std::pow(2.0f, (float)exponent-63.0f) * (1.0f + mantissa * std::pow(2.0f, -16.f));
             if (sign)
                 ret.value = -ret.value;
         }
@@ -1102,7 +1090,7 @@ struct State {
     Regs regs;
 
     /// Vertex shader memory
-    struct {
+    struct ShaderSetup {
         struct {
             Math::Vec4<float24> f[96];
             std::array<bool, 16> b;
@@ -1113,7 +1101,10 @@ struct State {
 
         std::array<u32, 1024> program_code;
         std::array<u32, 1024> swizzle_data;
-    } vs;
+    };
+
+    ShaderSetup vs;
+    ShaderSetup gs;
 
     /// Current Pica command list
     struct {

@@ -2,9 +2,13 @@
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
-#include <boost/range/algorithm.hpp>
+#include <cctype>
+#include <cerrno>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <boost/range/algorithm/transform.hpp>
 
-#include "common/common_funcs.h"
 #include "common/common_paths.h"
 #include "common/logging/log.h"
 #include "common/string_util.h"
@@ -12,6 +16,7 @@
 #ifdef _MSC_VER
     #include <Windows.h>
     #include <codecvt>
+    #include "common/common_funcs.h"
 #else
     #include <iconv.h>
 #endif
@@ -291,14 +296,28 @@ std::string ReplaceAll(std::string result, const std::string& src, const std::st
 
 std::string UTF16ToUTF8(const std::u16string& input)
 {
+#if _MSC_VER >= 1900
+    // Workaround for missing char16_t/char32_t instantiations in MSVC2015
+    std::wstring_convert<std::codecvt_utf8_utf16<__int16>, __int16> convert;
+    std::basic_string<__int16> tmp_buffer(input.cbegin(), input.cend());
+    return convert.to_bytes(tmp_buffer);
+#else
     std::wstring_convert<std::codecvt_utf8_utf16<char16_t>, char16_t> convert;
     return convert.to_bytes(input);
+#endif
 }
 
 std::u16string UTF8ToUTF16(const std::string& input)
 {
+#if _MSC_VER >= 1900
+    // Workaround for missing char16_t/char32_t instantiations in MSVC2015
+    std::wstring_convert<std::codecvt_utf8_utf16<__int16>, __int16> convert;
+    auto tmp_buffer = convert.from_bytes(input);
+    return std::u16string(tmp_buffer.cbegin(), tmp_buffer.cend());
+#else
     std::wstring_convert<std::codecvt_utf8_utf16<char16_t>, char16_t> convert;
     return convert.from_bytes(input);
+#endif
 }
 
 static std::string UTF16ToUTF8(const std::wstring& input)
@@ -308,7 +327,7 @@ static std::string UTF16ToUTF8(const std::wstring& input)
     std::string output;
     output.resize(size);
 
-    if (size == 0 || size != WideCharToMultiByte(CP_UTF8, 0, input.data(), input.size(), &output[0], output.size(), nullptr, nullptr))
+    if (size == 0 || size != WideCharToMultiByte(CP_UTF8, 0, input.data(), static_cast<int>(input.size()), &output[0], static_cast<int>(output.size()), nullptr, nullptr))
         output.clear();
 
     return output;

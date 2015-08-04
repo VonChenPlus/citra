@@ -6,13 +6,12 @@
 
 #include <array>
 #include <fstream>
+#include <cstddef>
 #include <cstdio>
-#include <cstring>
 #include <string>
 #include <vector>
 
 #include "common/common_types.h"
-#include "common/string_util.h"
 
 // User directory indices for GetUserPath
 enum {
@@ -117,9 +116,6 @@ bool SetCurrentDir(const std::string &directory);
 // directory. To be used in "multi-user" mode (that is, installed).
 const std::string& GetUserPath(const unsigned int DirIDX, const std::string &newPath="");
 
-// probably doesn't belong here
-//std::string GetThemeDir(const std::string& theme_name);
-
 // Returns the path to where the sys file are
 std::string GetSysDirectory();
 
@@ -182,6 +178,10 @@ public:
     template <typename T>
     size_t WriteArray(const T* data, size_t length)
     {
+        static_assert(std::is_standard_layout<T>::value, "Given array does not consist of standard layout objects");
+        // TODO: gcc 4.8 does not support is_trivially_copyable, but we really should check for it here.
+        //static_assert(std::is_trivially_copyable<T>::value, "Given array does not consist of trivially copyable objects");
+
         if (!IsOpen()) {
             m_good = false;
             return -1;
@@ -202,6 +202,12 @@ public:
     size_t WriteBytes(const void* data, size_t length)
     {
         return WriteArray(reinterpret_cast<const char*>(data), length);
+    }
+
+    template<typename T>
+    size_t WriteObject(const T& object) {
+        static_assert(!std::is_pointer<T>::value, "Given object is a pointer");
+        return WriteArray(&object, 1);
     }
 
     bool IsOpen() { return nullptr != m_file; }

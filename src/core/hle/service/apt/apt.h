@@ -4,12 +4,32 @@
 
 #pragma once
 
-#include <array>
-#include "core/hle/result.h"
-#include "core/hle/service/service.h"
+#include "common/common_types.h"
+
+#include "core/hle/kernel/kernel.h"
 
 namespace Service {
+
+class Interface;
+
 namespace APT {
+
+/// Holds information about the parameters used in Send/Glance/ReceiveParameter
+struct MessageParameter {
+    u32 sender_id = 0;
+    u32 destination_id = 0;
+    u32 signal = 0;
+    u32 buffer_size = 0;
+    Kernel::SharedPtr<Kernel::Object> object = nullptr;
+    u8* data = nullptr;
+};
+
+/// Holds information about the parameters used in StartLibraryApplet
+struct AppletStartupParameter {
+    u32 buffer_size = 0;
+    Kernel::SharedPtr<Kernel::Object> object = nullptr;
+    u8* data = nullptr;
+};
 
 /// Signals used by APT functions
 enum class SignalType : u32 {
@@ -23,7 +43,7 @@ enum class SignalType : u32 {
 };
 
 /// App Id's used by APT functions
-enum class AppID : u32 {
+enum class AppletId : u32 {
     HomeMenu           = 0x101,
     AlternateMenu      = 0x103,
     Camera             = 0x110,
@@ -42,8 +62,12 @@ enum class AppID : u32 {
     Extrapad           = 0x208,
     Memolib            = 0x209,
     Application        = 0x300,
+    AnyLibraryApplet   = 0x400,
     SoftwareKeyboard2  = 0x401,
 };
+
+/// Send a parameter to the currently-running application, which will read it via ReceiveParameter
+void SendParameter(const MessageParameter& parameter);
 
 /**
  * APT::Initialize service function
@@ -73,8 +97,26 @@ void GetSharedFont(Service::Interface* self);
  */
 void NotifyToWait(Service::Interface* self);
 
+/**
+ * APT::GetLockHandle service function
+ *  Inputs:
+ *      1 : Applet attributes
+ *  Outputs:
+ *      1 : Result of function, 0 on success, otherwise error code
+ *      2 : Applet attributes
+ *      3 : Power button state
+ *      4 : IPC handle descriptor
+ *      5 : APT mutex handle
+ */
 void GetLockHandle(Service::Interface* self);
 
+/**
+ * APT::Enable service function
+ *  Inputs:
+ *      1 : Applet attributes
+ *  Outputs:
+ *      1 : Result of function, 0 on success, otherwise error code
+ */
 void Enable(Service::Interface* self);
 
 /**
@@ -248,6 +290,44 @@ void SetAppCpuTimeLimit(Service::Interface* self);
  *      2 : System core CPU time percentage
  */
 void GetAppCpuTimeLimit(Service::Interface* self);
+
+/**
+ * APT::PrepareToStartLibraryApplet service function
+ *  Inputs:
+ *      0 : Command header [0x00180040]
+ *      1 : Id of the applet to start
+ *  Outputs:
+ *      0 : Return header
+ *      1 : Result of function, 0 on success, otherwise error code
+ */
+void PrepareToStartLibraryApplet(Service::Interface* self);
+
+/**
+ * APT::PreloadLibraryApplet service function
+ *  Inputs:
+ *      0 : Command header [0x00160040]
+ *      1 : Id of the applet to start
+ *  Outputs:
+ *      0 : Return header
+ *      1 : Result of function, 0 on success, otherwise error code
+ */
+void PreloadLibraryApplet(Service::Interface* self);
+
+/**
+ * APT::StartLibraryApplet service function
+ *  Inputs:
+ *      0 : Command header [0x001E0084]
+ *      1 : Id of the applet to start
+ *      2 : Buffer size
+ *      3 : Always 0?
+ *      4 : Handle passed to the applet
+ *      5 : (Size << 14) | 2
+ *      6 : Input buffer virtual address
+ *  Outputs:
+ *      0 : Return header
+ *      1 : Result of function, 0 on success, otherwise error code
+ */
+void StartLibraryApplet(Service::Interface* self);
 
 /// Initialize the APT service
 void Init();

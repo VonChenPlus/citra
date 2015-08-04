@@ -4,6 +4,8 @@
 
 #pragma once
 
+#include <string>
+
 #include "core/hle/service/service.h"
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -14,6 +16,7 @@ namespace DSP_DSP {
 class Interface : public Service::Interface {
 public:
     Interface();
+    ~Interface() override;
 
     std::string GetPortName() const override {
         return "dsp::DSP";

@@ -10,17 +10,15 @@
 #include "qhexedit.h"
 #include "main.h"
 
+#include "common/string_util.h"
 #include "common/logging/text_formatter.h"
 #include "common/logging/log.h"
 #include "common/logging/backend.h"
 #include "common/logging/filter.h"
 #include "common/make_unique.h"
 #include "common/platform.h"
+#include "common/scm_rev.h"
 #include "common/scope_exit.h"
-
-#if EMU_PLATFORM == PLATFORM_LINUX
-#include <unistd.h>
-#endif
 
 #include "bootmanager.h"
 #include "hotkeys.h"
@@ -34,6 +32,7 @@
 #include "debugger/graphics_breakpoints.h"
 #include "debugger/graphics_cmdlists.h"
 #include "debugger/graphics_framebuffer.h"
+#include "debugger/graphics_tracing.h"
 #include "debugger/graphics_vertex_shader.h"
 #include "debugger/profiler.h"
 
@@ -96,6 +95,10 @@ GMainWindow::GMainWindow() : emu_thread(nullptr)
     addDockWidget(Qt::RightDockWidgetArea, graphicsVertexShaderWidget);
     graphicsVertexShaderWidget->hide();
 
+    auto graphicsTracingWidget = new GraphicsTracingWidget(Pica::g_debug_context, this);
+    addDockWidget(Qt::RightDockWidgetArea, graphicsTracingWidget);
+    graphicsTracingWidget->hide();
+
     QMenu* debug_menu = ui.menu_View->addMenu(tr("Debugging"));
     debug_menu->addAction(profilerWidget->toggleViewAction());
     debug_menu->addAction(disasmWidget->toggleViewAction());
@@ -106,6 +109,7 @@ GMainWindow::GMainWindow() : emu_thread(nullptr)
     debug_menu->addAction(graphicsBreakpointsWidget->toggleViewAction());
     debug_menu->addAction(graphicsFramebufferWidget->toggleViewAction());
     debug_menu->addAction(graphicsVertexShaderWidget->toggleViewAction());
+    debug_menu->addAction(graphicsTracingWidget->toggleViewAction());
 
     // Set default UI state
     // geometry: 55% of the window contents are in the upper screen half, 45% in the lower half
@@ -118,9 +122,8 @@ GMainWindow::GMainWindow() : emu_thread(nullptr)
     y = (screenRect.y() + screenRect.height()) / 2 - h * 55 / 100;
     setGeometry(x, y, w, h);
 
-
     // Restore UI state
-    QSettings settings(QSettings::IniFormat, QSettings::UserScope, "Citra team", "Citra");
+    QSettings settings;
     restoreGeometry(settings.value("geometry").toByteArray());
     restoreState(settings.value("state").toByteArray());
     render_window->restoreGeometry(settings.value("geometryRenderWindow").toByteArray());
@@ -150,6 +153,9 @@ GMainWindow::GMainWindow() : emu_thread(nullptr)
     connect(this, SIGNAL(EmulationStopping()), registersWidget, SLOT(OnEmulationStopping()));
     connect(this, SIGNAL(EmulationStarting(EmuThread*)), render_window, SLOT(OnEmulationStarting(EmuThread*)));
     connect(this, SIGNAL(EmulationStopping()), render_window, SLOT(OnEmulationStopping()));
+    connect(this, SIGNAL(EmulationStarting(EmuThread*)), graphicsTracingWidget, SLOT(OnEmulationStarting(EmuThread*)));
+    connect(this, SIGNAL(EmulationStopping()), graphicsTracingWidget, SLOT(OnEmulationStopping()));
+
 
     // Setup hotkeys
     RegisterHotkey("Main Window", "Load File", QKeySequence::Open);
@@ -200,7 +206,7 @@ void GMainWindow::OnDisplayTitleBars(bool show)
     }
 }
 
-void GMainWindow::BootGame(std::string filename) {
+void GMainWindow::BootGame(const std::string& filename) {
     LOG_INFO(Frontend, "Citra starting...\n");
 
     // Initialize the core emulation
@@ -256,6 +262,7 @@ void GMainWindow::ShutdownGame() {
 
     // Update the GUI
     ui.action_Start->setEnabled(false);
+    ui.action_Start->setText(tr("Start"));
     ui.action_Pause->setEnabled(false);
     ui.action_Stop->setEnabled(false);
     render_window->hide();
@@ -263,8 +270,13 @@ void GMainWindow::ShutdownGame() {
 
 void GMainWindow::OnMenuLoadFile()
 {
-    QString filename = QFileDialog::getOpenFileName(this, tr("Load File"), QString(), tr("3DS executable (*.3ds *.3dsx *.elf *.axf *.cci *.cxi)"));
+    QSettings settings;
+    QString rom_path = settings.value("romsPath", QString()).toString();
+
+    QString filename = QFileDialog::getOpenFileName(this, tr("Load File"), rom_path, tr("3DS executable (*.3ds *.3dsx *.elf *.axf *.cci *.cxi)"));
     if (filename.size()) {
+        settings.setValue("romsPath", QFileInfo(filename).path());
+
         // Shutdown previous session if the emu thread is still active...
         if (emu_thread != nullptr)
             ShutdownGame();
@@ -274,9 +286,15 @@ void GMainWindow::OnMenuLoadFile()
 }
 
 void GMainWindow::OnMenuLoadSymbolMap() {
-    QString filename = QFileDialog::getOpenFileName(this, tr("Load Symbol Map"), QString(), tr("Symbol map (*)"));
-    if (filename.size())
+    QSettings settings;
+    QString symbol_path = settings.value("symbolsPath", QString()).toString();
+
+    QString filename = QFileDialog::getOpenFileName(this, tr("Load Symbol Map"), symbol_path, tr("Symbol map (*)"));
+    if (filename.size()) {
+        settings.setValue("symbolsPath", QFileInfo(filename).path());
+
         LoadSymbolMap(filename.toLatin1().data());
+    }
 }
 
 void GMainWindow::OnStartGame()
@@ -284,6 +302,8 @@ void GMainWindow::OnStartGame()
     emu_thread->SetRunning(true);
 
     ui.action_Start->setEnabled(false);
+    ui.action_Start->setText(tr("Continue"));
+
     ui.action_Pause->setEnabled(true);
     ui.action_Stop->setEnabled(true);
 }
@@ -364,6 +384,11 @@ int main(int argc, char* argv[])
 {
     Log::Filter log_filter(Log::Level::Info);
     Log::SetFilter(&log_filter);
+
+    // Init settings params
+    QSettings::setDefaultFormat(QSettings::IniFormat);
+    QCoreApplication::setOrganizationName("Citra team");
+    QCoreApplication::setApplicationName("Citra");
 
     QApplication::setAttribute(Qt::AA_X11InitThreads);
     QApplication app(argc, argv);
