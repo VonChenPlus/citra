@@ -2,8 +2,9 @@
 
 #pragma once
 
-#include <cstdint>
 #include <string>
+
+#include "common/common_types.h"
 
 // Note: this list of opcodes must match the list used to initialize
 // the opflags[] array in opcode.cpp.
@@ -20,6 +21,7 @@ enum Opcode {
     OP_BLX,
     OP_BX,
     OP_CDP,
+    OP_CLREX,
     OP_CLZ,
     OP_CMN,
     OP_CMP,
@@ -29,6 +31,10 @@ enum Opcode {
     OP_LDR,
     OP_LDRB,
     OP_LDRBT,
+    OP_LDREX,
+    OP_LDREXB,
+    OP_LDREXD,
+    OP_LDREXH,
     OP_LDRH,
     OP_LDRSB,
     OP_LDRSH,
@@ -41,28 +47,105 @@ enum Opcode {
     OP_MSR,
     OP_MUL,
     OP_MVN,
+    OP_NOP,
     OP_ORR,
+    OP_PKH,
     OP_PLD,
+    OP_QADD16,
+    OP_QADD8,
+    OP_QASX,
+    OP_QSAX,
+    OP_QSUB16,
+    OP_QSUB8,
+    OP_REV,
+    OP_REV16,
+    OP_REVSH,
     OP_RSB,
     OP_RSC,
+    OP_SADD16,
+    OP_SADD8,
+    OP_SASX,
     OP_SBC,
+    OP_SEL,
+    OP_SEV,
+    OP_SHADD16,
+    OP_SHADD8,
+    OP_SHASX,
+    OP_SHSAX,
+    OP_SHSUB16,
+    OP_SHSUB8,
+    OP_SMLAD,
     OP_SMLAL,
+    OP_SMLALD,
+    OP_SMLSD,
+    OP_SMLSLD,
+    OP_SMMLA,
+    OP_SMMLS,
+    OP_SMMUL,
+    OP_SMUAD,
     OP_SMULL,
+    OP_SMUSD,
+    OP_SSAT,
+    OP_SSAT16,
+    OP_SSAX,
+    OP_SSUB16,
+    OP_SSUB8,
     OP_STC,
     OP_STM,
     OP_STR,
     OP_STRB,
     OP_STRBT,
+    OP_STREX,
+    OP_STREXB,
+    OP_STREXD,
+    OP_STREXH,
     OP_STRH,
     OP_STRT,
     OP_SUB,
     OP_SWI,
     OP_SWP,
     OP_SWPB,
+    OP_SXTAB,
+    OP_SXTAB16,
+    OP_SXTAH,
+    OP_SXTB,
+    OP_SXTB16,
+    OP_SXTH,
     OP_TEQ,
     OP_TST,
+    OP_UADD16,
+    OP_UADD8,
+    OP_UASX,
+    OP_UHADD16,
+    OP_UHADD8,
+    OP_UHASX,
+    OP_UHSAX,
+    OP_UHSUB16,
+    OP_UHSUB8,
     OP_UMLAL,
     OP_UMULL,
+    OP_UQADD16,
+    OP_UQADD8,
+    OP_UQASX,
+    OP_UQSAX,
+    OP_UQSUB16,
+    OP_UQSUB8,
+    OP_USAD8,
+    OP_USADA8,
+    OP_USAT,
+    OP_USAT16,
+    OP_USAX,
+    OP_USUB16,
+    OP_USUB8,
+    OP_UXTAB,
+    OP_UXTAB16,
+    OP_UXTAH,
+    OP_UXTB,
+    OP_UXTB16,
+    OP_UXTH,
+    OP_WFE,
+    OP_WFI,
+    OP_YIELD,
 
     // Define thumb opcodes
     OP_THUMB_UNDEFINED,
@@ -109,33 +192,48 @@ enum Opcode {
 
 class ARM_Disasm {
  public:
-  static std::string Disassemble(uint32_t addr, uint32_t insn);
-  static Opcode Decode(uint32_t insn);
+  static std::string Disassemble(u32 addr, u32 insn);
+  static Opcode Decode(u32 insn);
 
  private:
-  static Opcode Decode00(uint32_t insn);
-  static Opcode Decode01(uint32_t insn);
-  static Opcode Decode10(uint32_t insn);
-  static Opcode Decode11(uint32_t insn);
-  static Opcode DecodeMUL(uint32_t insn);
-  static Opcode DecodeLDRH(uint32_t insn);
-  static Opcode DecodeALU(uint32_t insn);
+  static Opcode Decode00(u32 insn);
+  static Opcode Decode01(u32 insn);
+  static Opcode Decode10(u32 insn);
+  static Opcode Decode11(u32 insn);
+  static Opcode DecodeSyncPrimitive(u32 insn);
+  static Opcode DecodeParallelAddSub(u32 insn);
+  static Opcode DecodePackingSaturationReversal(u32 insn);
+  static Opcode DecodeMUL(u32 insn);
+  static Opcode DecodeMSRImmAndHints(u32 insn);
+  static Opcode DecodeMediaMulDiv(u32 insn);
+  static Opcode DecodeMedia(u32 insn);
+  static Opcode DecodeLDRH(u32 insn);
+  static Opcode DecodeALU(u32 insn);
 
-  static std::string DisassembleALU(Opcode opcode, uint32_t insn);
-  static std::string DisassembleBranch(uint32_t addr, Opcode opcode, uint32_t insn);
-  static std::string DisassembleBX(uint32_t insn);
-  static std::string DisassembleBKPT(uint32_t insn);
-  static std::string DisassembleCLZ(uint32_t insn);
-  static std::string DisassembleMemblock(Opcode opcode, uint32_t insn);
-  static std::string DisassembleMem(uint32_t insn);
-  static std::string DisassembleMemHalf(uint32_t insn);
-  static std::string DisassembleMCR(Opcode opcode, uint32_t insn);
-  static std::string DisassembleMLA(Opcode opcode, uint32_t insn);
-  static std::string DisassembleUMLAL(Opcode opcode, uint32_t insn);
-  static std::string DisassembleMUL(Opcode opcode, uint32_t insn);
-  static std::string DisassembleMRS(uint32_t insn);
-  static std::string DisassembleMSR(uint32_t insn);
-  static std::string DisassemblePLD(uint32_t insn);
-  static std::string DisassembleSWI(uint32_t insn);
-  static std::string DisassembleSWP(Opcode opcode, uint32_t insn);
+  static std::string DisassembleALU(Opcode opcode, u32 insn);
+  static std::string DisassembleBranch(u32 addr, Opcode opcode, u32 insn);
+  static std::string DisassembleBX(u32 insn);
+  static std::string DisassembleBKPT(u32 insn);
+  static std::string DisassembleCLZ(u32 insn);
+  static std::string DisassembleMediaMulDiv(Opcode opcode, u32 insn);
+  static std::string DisassembleMemblock(Opcode opcode, u32 insn);
+  static std::string DisassembleMem(u32 insn);
+  static std::string DisassembleMemHalf(u32 insn);
+  static std::string DisassembleMCR(Opcode opcode, u32 insn);
+  static std::string DisassembleMLA(Opcode opcode, u32 insn);
+  static std::string DisassembleUMLAL(Opcode opcode, u32 insn);
+  static std::string DisassembleMUL(Opcode opcode, u32 insn);
+  static std::string DisassembleMRS(u32 insn);
+  static std::string DisassembleMSR(u32 insn);
+  static std::string DisassembleNoOperands(Opcode opcode, u32 insn);
+  static std::string DisassembleParallelAddSub(Opcode opcode, u32 insn);
+  static std::string DisassemblePKH(u32 insn);
+  static std::string DisassemblePLD(u32 insn);
+  static std::string DisassembleREV(Opcode opcode, u32 insn);
+  static std::string DisassembleREX(Opcode opcode, u32 insn);
+  static std::string DisassembleSAT(Opcode opcode, u32 insn);
+  static std::string DisassembleSEL(u32 insn);
+  static std::string DisassembleSWI(u32 insn);
+  static std::string DisassembleSWP(Opcode opcode, u32 insn);
+  static std::string DisassembleXT(Opcode opcode, u32 insn);
 };

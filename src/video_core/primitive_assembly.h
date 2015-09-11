@@ -8,8 +8,6 @@
 
 #include "video_core/pica.h"
 
-#include "video_core/vertex_shader.h"
-
 namespace Pica {
 
 /*

@@ -4,9 +4,10 @@
 
 #include <algorithm>
 #include <condition_variable>
+#include <cstring>
+#include <fstream>
 #include <list>
 #include <map>
-#include <fstream>
 #include <mutex>
 #include <string>
 
@@ -14,13 +15,17 @@
 #include <png.h>
 #endif
 
+#include <nihstro/float24.h>
 #include <nihstro/shader_binary.h>
 
 #include "common/assert.h"
 #include "common/color.h"
+#include "common/common_types.h"
 #include "common/file_util.h"
 #include "common/math_util.h"
 #include "common/vector_math.h"
+
+#include "core/settings.h"
 
 #include "video_core/pica.h"
 #include "video_core/renderer_base.h"
@@ -42,8 +47,10 @@ void DebugContext::OnEvent(Event event, void* data) {
     {
         std::unique_lock<std::mutex> lock(breakpoint_mutex);
 
-        // Commit the hardware renderer's framebuffer so it will show on debug widgets
-        VideoCore::g_renderer->hw_rasterizer->CommitFramebuffer();
+        if (Settings::values.use_hw_renderer) {
+            // Commit the hardware renderer's framebuffer so it will show on debug widgets
+            VideoCore::g_renderer->hw_rasterizer->CommitFramebuffer();
+        }
 
         // TODO: Should stop the CPU thread here once we multithread emulation.
 
@@ -62,7 +69,7 @@ void DebugContext::OnEvent(Event event, void* data) {
 
 void DebugContext::Resume() {
     {
-        std::unique_lock<std::mutex> lock(breakpoint_mutex);
+        std::lock_guard<std::mutex> lock(breakpoint_mutex);
 
         // Tell all observers that we are about to resume
         for (auto& breakpoint_observer : breakpoint_observers) {
@@ -109,8 +116,7 @@ void GeometryDumper::Dump() {
 }
 
 
-void DumpShader(const u32* binary_data, u32 binary_size, const u32* swizzle_data, u32 swizzle_size,
-                u32 main_offset, const Regs::VSOutputAttributes* output_attributes)
+void DumpShader(const std::string& filename, const Regs::ShaderConfig& config, const State::ShaderSetup& setup, const Regs::VSOutputAttributes* output_attributes)
 {
     struct StuffToWrite {
         u8* pointer;
@@ -130,11 +136,14 @@ void DumpShader(const u32* binary_data, u32 binary_size, const u32* swizzle_data
     // into shbin format (separate type and component mask).
     union OutputRegisterInfo {
         enum Type : u64 {
-            POSITION = 0,
-            COLOR = 2,
-            TEXCOORD0 = 3,
-            TEXCOORD1 = 5,
-            TEXCOORD2 = 6,
+            POSITION   = 0,
+            QUATERNION = 1,
+            COLOR      = 2,
+            TEXCOORD0  = 3,
+            TEXCOORD1  = 5,
+            TEXCOORD2  = 6,
+
+            VIEW       = 8,
         };
 
         BitField< 0, 64, u64> hex;
@@ -156,6 +165,10 @@ void DumpShader(const u32* binary_data, u32 binary_size, const u32* swizzle_data
                 { OutputAttributes::POSITION_Y, { OutputRegisterInfo::POSITION, 2} },
                 { OutputAttributes::POSITION_Z, { OutputRegisterInfo::POSITION, 4} },
                 { OutputAttributes::POSITION_W, { OutputRegisterInfo::POSITION, 8} },
+                { OutputAttributes::QUATERNION_X, { OutputRegisterInfo::QUATERNION, 1} },
+                { OutputAttributes::QUATERNION_Y, { OutputRegisterInfo::QUATERNION, 2} },
+                { OutputAttributes::QUATERNION_Z, { OutputRegisterInfo::QUATERNION, 4} },
+                { OutputAttributes::QUATERNION_W, { OutputRegisterInfo::QUATERNION, 8} },
                 { OutputAttributes::COLOR_R, { OutputRegisterInfo::COLOR, 1} },
                 { OutputAttributes::COLOR_G, { OutputRegisterInfo::COLOR, 2} },
                 { OutputAttributes::COLOR_B, { OutputRegisterInfo::COLOR, 4} },
@@ -165,7 +178,10 @@ void DumpShader(const u32* binary_data, u32 binary_size, const u32* swizzle_data
                 { OutputAttributes::TEXCOORD1_U, { OutputRegisterInfo::TEXCOORD1, 1} },
                 { OutputAttributes::TEXCOORD1_V, { OutputRegisterInfo::TEXCOORD1, 2} },
                 { OutputAttributes::TEXCOORD2_U, { OutputRegisterInfo::TEXCOORD2, 1} },
-                { OutputAttributes::TEXCOORD2_V, { OutputRegisterInfo::TEXCOORD2, 2} }
+                { OutputAttributes::TEXCOORD2_V, { OutputRegisterInfo::TEXCOORD2, 2} },
+                { OutputAttributes::VIEW_X, { OutputRegisterInfo::VIEW, 1} },
+                { OutputAttributes::VIEW_Y, { OutputRegisterInfo::VIEW, 2} },
+                { OutputAttributes::VIEW_Z, { OutputRegisterInfo::VIEW, 4} }
             };
 
             for (const auto& semantic : std::vector<OutputAttributes::Semantic>{
@@ -220,28 +236,68 @@ void DumpShader(const u32* binary_data, u32 binary_size, const u32* swizzle_data
 
     // TODO: Reduce the amount of binary code written to relevant portions
     dvlp.binary_offset = write_offset - dvlp_offset;
-    dvlp.binary_size_words = binary_size;
-    QueueForWriting((u8*)binary_data, binary_size * sizeof(u32));
+    dvlp.binary_size_words = setup.program_code.size();
+    QueueForWriting((u8*)setup.program_code.data(), setup.program_code.size() * sizeof(u32));
 
     dvlp.swizzle_info_offset = write_offset - dvlp_offset;
-    dvlp.swizzle_info_num_entries = swizzle_size;
+    dvlp.swizzle_info_num_entries = setup.swizzle_data.size();
     u32 dummy = 0;
-    for (unsigned int i = 0; i < swizzle_size; ++i) {
-        QueueForWriting((u8*)&swizzle_data[i], sizeof(swizzle_data[i]));
+    for (unsigned int i = 0; i < setup.swizzle_data.size(); ++i) {
+        QueueForWriting((u8*)&setup.swizzle_data[i], sizeof(setup.swizzle_data[i]));
         QueueForWriting((u8*)&dummy, sizeof(dummy));
     }
 
-    dvle.main_offset_words = main_offset;
+    dvle.main_offset_words = config.main_offset;
     dvle.output_register_table_offset = write_offset - dvlb.dvle_offset;
-    dvle.output_register_table_size = static_cast<uint32_t>(output_info_table.size());
+    dvle.output_register_table_size = static_cast<u32>(output_info_table.size());
     QueueForWriting((u8*)output_info_table.data(), static_cast<u32>(output_info_table.size() * sizeof(OutputRegisterInfo)));
 
     // TODO: Create a label table for "main"
 
+    std::vector<nihstro::ConstantInfo> constant_table;
+    for (unsigned i = 0; i < setup.uniforms.b.size(); ++i) {
+        nihstro::ConstantInfo constant;
+        memset(&constant, 0, sizeof(constant));
+        constant.type = nihstro::ConstantInfo::Bool;
+        constant.regid = i;
+        constant.b = setup.uniforms.b[i];
+        constant_table.emplace_back(constant);
+    }
+    for (unsigned i = 0; i < setup.uniforms.i.size(); ++i) {
+        nihstro::ConstantInfo constant;
+        memset(&constant, 0, sizeof(constant));
+        constant.type = nihstro::ConstantInfo::Int;
+        constant.regid = i;
+        constant.i.x = setup.uniforms.i[i].x;
+        constant.i.y = setup.uniforms.i[i].y;
+        constant.i.z = setup.uniforms.i[i].z;
+        constant.i.w = setup.uniforms.i[i].w;
+        constant_table.emplace_back(constant);
+    }
+    for (unsigned i = 0; i < sizeof(setup.uniforms.f) / sizeof(setup.uniforms.f[0]); ++i) {
+        nihstro::ConstantInfo constant;
+        memset(&constant, 0, sizeof(constant));
+        constant.type = nihstro::ConstantInfo::Float;
+        constant.regid = i;
+        constant.f.x = nihstro::to_float24(setup.uniforms.f[i].x.ToFloat32());
+        constant.f.y = nihstro::to_float24(setup.uniforms.f[i].y.ToFloat32());
+        constant.f.z = nihstro::to_float24(setup.uniforms.f[i].z.ToFloat32());
+        constant.f.w = nihstro::to_float24(setup.uniforms.f[i].w.ToFloat32());
+
+        // Store constant if it's different from zero..
+        if (setup.uniforms.f[i].x.ToFloat32() != 0.0 ||
+            setup.uniforms.f[i].y.ToFloat32() != 0.0 ||
+            setup.uniforms.f[i].z.ToFloat32() != 0.0 ||
+            setup.uniforms.f[i].w.ToFloat32() != 0.0)
+            constant_table.emplace_back(constant);
+    }
+    dvle.constant_table_offset = write_offset - dvlb.dvle_offset;
+    dvle.constant_table_size = constant_table.size();
+    for (const auto& constant : constant_table) {
+        QueueForWriting((uint8_t*)&constant, sizeof(constant));
+    }
 
     // Write data to file
-    static int dump_index = 0;
-    std::string filename = std::string("shader_dump") + std::to_string(++dump_index) + std::string(".shbin");
     std::ofstream file(filename, std::ios_base::out | std::ios_base::binary);
 
     for (auto& chunk : writing_queue) {
@@ -260,11 +316,10 @@ void StartPicaTracing()
         return;
     }
 
-    pica_trace_mutex.lock();
+    std::lock_guard<std::mutex> lock(pica_trace_mutex);
     pica_trace = std::unique_ptr<PicaTrace>(new PicaTrace);
 
     is_pica_tracing = true;
-    pica_trace_mutex.unlock();
 }
 
 bool IsPicaTracing()
@@ -272,18 +327,18 @@ bool IsPicaTracing()
     return is_pica_tracing != 0;
 }
 
-void OnPicaRegWrite(u32 id, u32 value)
+void OnPicaRegWrite(PicaTrace::Write write)
 {
     // Double check for is_pica_tracing to avoid pointless locking overhead
     if (!is_pica_tracing)
         return;
 
-    std::unique_lock<std::mutex> lock(pica_trace_mutex);
+    std::lock_guard<std::mutex> lock(pica_trace_mutex);
 
     if (!is_pica_tracing)
         return;
 
-    pica_trace->writes.emplace_back(id, value);
+    pica_trace->writes.push_back(write);
 }
 
 std::unique_ptr<PicaTrace> FinishPicaTracing()
@@ -297,9 +352,9 @@ std::unique_ptr<PicaTrace> FinishPicaTracing()
     is_pica_tracing = false;
 
     // Wait until running tracing is finished
-    pica_trace_mutex.lock();
+    std::lock_guard<std::mutex> lock(pica_trace_mutex);
     std::unique_ptr<PicaTrace> ret(std::move(pica_trace));
-    pica_trace_mutex.unlock();
+
     return std::move(ret);
 }
 
@@ -356,6 +411,12 @@ const Math::Vec4<u8> LookupTexture(const u8* source, int x, int y, const Texture
         } else {
             return { source_ptr[1], source_ptr[1], source_ptr[1], source_ptr[0] };
         }
+    }
+
+    case Regs::TextureFormat::RG8:
+    {
+        auto res = Color::DecodeRG8(source + VideoCore::GetMortonOffset(x, y, 2));
+        return { res.r(), res.g(), 0, 255 };
     }
 
     case Regs::TextureFormat::I8:
@@ -633,7 +694,6 @@ void DumpTexture(const Pica::Regs::TextureConfig& texture_config, u8* data) {
     for (unsigned y = 0; y < texture_config.height; ++y)
     {
         u8* row_ptr = (u8*)buf + y * row_stride;
-        u8* ptr = row_ptr;
         png_write_row(png_ptr, row_ptr);
     }
 

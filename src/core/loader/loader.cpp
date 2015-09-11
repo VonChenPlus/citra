@@ -50,7 +50,7 @@ static FileType IdentifyFile(FileUtil::IOFile& file) {
 
 /**
  * Guess the type of a bootable file from its extension
- * @param extension String extension of bootable file
+ * @param extension_ String extension of bootable file
  * @return FileType of file
  */
 static FileType GuessFromExtension(const std::string& extension_) {
@@ -77,6 +77,8 @@ static const char* GetFileTypeString(FileType type) {
         return "NCSD";
     case FileType::CXI:
         return "NCCH";
+    case FileType::CIA:
+        return "CIA";
     case FileType::ELF:
         return "ELF";
     case FileType::THREEDSX:
@@ -133,6 +135,10 @@ ResultStatus LoadFile(const std::string& filename) {
         }
         break;
     }
+
+    // CIA file format...
+    case FileType::CIA:
+        return ResultStatus::ErrorNotImplemented;
 
     // Error occurred durring IdentifyFile...
     case FileType::Error:

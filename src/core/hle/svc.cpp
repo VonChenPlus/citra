@@ -5,16 +5,17 @@
 #include <map>
 
 #include "common/logging/log.h"
+#include "common/microprofile.h"
 #include "common/profiler.h"
 #include "common/string_util.h"
 #include "common/symbols.h"
 
 #include "core/core_timing.h"
-#include "core/mem_map.h"
 #include "core/arm/arm_interface.h"
 
 #include "core/hle/kernel/address_arbiter.h"
 #include "core/hle/kernel/event.h"
+#include "core/hle/kernel/memory.h"
 #include "core/hle/kernel/mutex.h"
 #include "core/hle/kernel/process.h"
 #include "core/hle/kernel/resource_limit.h"
@@ -41,32 +42,114 @@ const ResultCode ERR_NOT_FOUND(ErrorDescription::NotFound, ErrorModule::Kernel,
 const ResultCode ERR_PORT_NAME_TOO_LONG(ErrorDescription(30), ErrorModule::OS,
         ErrorSummary::InvalidArgument, ErrorLevel::Usage); // 0xE0E0181E
 
+const ResultCode ERR_MISALIGNED_ADDRESS{ // 0xE0E01BF1
+        ErrorDescription::MisalignedAddress, ErrorModule::OS,
+        ErrorSummary::InvalidArgument, ErrorLevel::Usage};
+const ResultCode ERR_MISALIGNED_SIZE{ // 0xE0E01BF2
+        ErrorDescription::MisalignedSize, ErrorModule::OS,
+        ErrorSummary::InvalidArgument, ErrorLevel::Usage};
+const ResultCode ERR_INVALID_COMBINATION{ // 0xE0E01BEE
+        ErrorDescription::InvalidCombination, ErrorModule::OS,
+        ErrorSummary::InvalidArgument, ErrorLevel::Usage};
+
 enum ControlMemoryOperation {
-    MEMORY_OPERATION_HEAP       = 0x00000003,
-    MEMORY_OPERATION_GSP_HEAP   = 0x00010003,
+    MEMOP_FREE    = 1,
+    MEMOP_RESERVE = 2, // This operation seems to be unsupported in the kernel
+    MEMOP_COMMIT  = 3,
+    MEMOP_MAP     = 4,
+    MEMOP_UNMAP   = 5,
+    MEMOP_PROTECT = 6,
+    MEMOP_OPERATION_MASK = 0xFF,
+
+    MEMOP_REGION_APP    = 0x100,
+    MEMOP_REGION_SYSTEM = 0x200,
+    MEMOP_REGION_BASE   = 0x300,
+    MEMOP_REGION_MASK   = 0xF00,
+
+    MEMOP_LINEAR = 0x10000,
 };
 
 /// Map application or GSP heap memory
 static ResultCode ControlMemory(u32* out_addr, u32 operation, u32 addr0, u32 addr1, u32 size, u32 permissions) {
-    LOG_TRACE(Kernel_SVC,"called operation=0x%08X, addr0=0x%08X, addr1=0x%08X, size=%08X, permissions=0x%08X",
+    using namespace Kernel;
+
+    LOG_DEBUG(Kernel_SVC,"called operation=0x%08X, addr0=0x%08X, addr1=0x%08X, size=0x%X, permissions=0x%08X",
         operation, addr0, addr1, size, permissions);
 
-    switch (operation) {
+    if ((addr0 & Memory::PAGE_MASK) != 0 || (addr1 & Memory::PAGE_MASK) != 0) {
+        return ERR_MISALIGNED_ADDRESS;
+    }
+    if ((size & Memory::PAGE_MASK) != 0) {
+        return ERR_MISALIGNED_SIZE;
+    }
 
-    // Map normal heap memory
-    case MEMORY_OPERATION_HEAP:
-        *out_addr = Memory::MapBlock_Heap(size, operation, permissions);
+    u32 region = operation & MEMOP_REGION_MASK;
+    operation &= ~MEMOP_REGION_MASK;
+
+    if (region != 0) {
+        LOG_WARNING(Kernel_SVC, "ControlMemory with specified region not supported, region=%X", region);
+    }
+
+    if ((permissions & (u32)MemoryPermission::ReadWrite) != permissions) {
+        return ERR_INVALID_COMBINATION;
+    }
+    VMAPermission vma_permissions = (VMAPermission)permissions;
+
+    auto& process = *g_current_process;
+
+    switch (operation & MEMOP_OPERATION_MASK) {
+    case MEMOP_FREE:
+    {
+        if (addr0 >= Memory::HEAP_VADDR && addr0 < Memory::HEAP_VADDR_END) {
+            ResultCode result = process.HeapFree(addr0, size);
+            if (result.IsError()) return result;
+        } else if (addr0 >= process.GetLinearHeapBase() && addr0 < process.GetLinearHeapLimit()) {
+            ResultCode result = process.LinearFree(addr0, size);
+            if (result.IsError()) return result;
+        } else {
+            return ERR_INVALID_ADDRESS;
+        }
+        *out_addr = addr0;
         break;
+    }
 
-    // Map GSP heap memory
-    case MEMORY_OPERATION_GSP_HEAP:
-        *out_addr = Memory::MapBlock_HeapLinear(size, operation, permissions);
+    case MEMOP_COMMIT:
+    {
+        if (operation & MEMOP_LINEAR) {
+            CASCADE_RESULT(*out_addr, process.LinearAllocate(addr0, size, vma_permissions));
+        } else {
+            CASCADE_RESULT(*out_addr, process.HeapAllocate(addr0, size, vma_permissions));
+        }
         break;
+    }
 
-    // Unknown ControlMemory operation
+    case MEMOP_MAP: // TODO: This is just a hack to avoid regressions until memory aliasing is implemented
+    {
+        CASCADE_RESULT(*out_addr, process.HeapAllocate(addr0, size, vma_permissions));
+        break;
+    }
+
+    case MEMOP_UNMAP: // TODO: This is just a hack to avoid regressions until memory aliasing is implemented
+    {
+        ResultCode result = process.HeapFree(addr0, size);
+        if (result.IsError()) return result;
+        break;
+    }
+
+    case MEMOP_PROTECT:
+    {
+        ResultCode result = process.vm_manager.ReprotectRange(addr0, size, vma_permissions);
+        if (result.IsError()) return result;
+        break;
+    }
+
     default:
         LOG_ERROR(Kernel_SVC, "unknown operation=0x%08X", operation);
+        return ERR_INVALID_COMBINATION;
     }
+
+    process.vm_manager.LogLayout(Log::Level::Trace);
+
     return RESULT_SUCCESS;
 }
 
@@ -537,9 +620,9 @@ static ResultCode QueryProcessMemory(MemoryInfo* memory_info, PageInfo* page_inf
     if (process == nullptr)
         return ERR_INVALID_HANDLE;
 
-    auto vma = process->address_space->FindVMA(addr);
+    auto vma = process->vm_manager.FindVMA(addr);
 
-    if (vma == process->address_space->vma_map.end())
+    if (vma == Kernel::g_current_process->vm_manager.vma_map.end())
         return ResultCode(ErrorDescription::InvalidAddress, ErrorModule::OS, ErrorSummary::InvalidArgument, ErrorLevel::Usage);
 
     memory_info->base_address = vma->second.base;
@@ -672,7 +755,10 @@ static void SleepThread(s64 nanoseconds) {
 
 /// This returns the total CPU ticks elapsed since the CPU was powered-on
 static s64 GetSystemTick() {
-    return (s64)CoreTiming::GetTicks();
+    s64 result = CoreTiming::GetTicks();
+    // Advance time to defeat dumb games (like Cubic Ninja) that busy-wait for the frame to end.
+    Core::g_app_core->AddTicks(150); // Measured time between two calls on a 9.2 o3DS with Ninjhax 1.1b
+    return result;
 }
 
 /// Creates a memory block at the specified address with the specified permissions and size
@@ -689,6 +775,52 @@ static ResultCode CreateMemoryBlock(Handle* out_handle, u32 addr, u32 size, u32 
     CASCADE_RESULT(*out_handle, Kernel::g_handle_table.Create(std::move(shared_memory)));
 
     LOG_WARNING(Kernel_SVC, "(STUBBED) called addr=0x%08X", addr);
+    return RESULT_SUCCESS;
+}
+
+static ResultCode GetProcessInfo(s64* out, Handle process_handle, u32 type) {
+    LOG_TRACE(Kernel_SVC, "called process=0x%08X type=%u", process_handle, type);
+
+    using Kernel::Process;
+    Kernel::SharedPtr<Process> process = Kernel::g_handle_table.Get<Process>(process_handle);
+    if (process == nullptr)
+        return ERR_INVALID_HANDLE;
+
+    switch (type) {
+    case 0:
+    case 2:
+        // TODO(yuriks): Type 0 returns a slightly higher number than type 2, but I'm not sure
+        // what's the difference between them.
+        *out = process->heap_used + process->linear_heap_used + process->misc_memory_used;
+        break;
+    case 1:
+    case 3:
+    case 4:
+    case 5:
+    case 6:
+    case 7:
+    case 8:
+        // These are valid, but not implemented yet
+        LOG_ERROR(Kernel_SVC, "unimplemented GetProcessInfo type=%u", type);
+        break;
+    case 20:
+        *out = Memory::FCRAM_PADDR - process->GetLinearHeapBase();
+        break;
+    default:
+        LOG_ERROR(Kernel_SVC, "unknown GetProcessInfo type=%u", type);
+
+        if (type >= 21 && type <= 23) {
+            return ResultCode( // 0xE0E01BF4
+                    ErrorDescription::NotImplemented, ErrorModule::OS,
+                    ErrorSummary::InvalidArgument, ErrorLevel::Usage);
+        } else {
+            return ResultCode( // 0xD8E007ED
+                    ErrorDescription::InvalidEnumValue, ErrorModule::Kernel,
+                    ErrorSummary::InvalidArgument, ErrorLevel::Permanent);
+        }
+        break;
+    }
+
     return RESULT_SUCCESS;
 }
 
@@ -746,7 +878,7 @@ static const FunctionDef SVC_Table[] = {
     {0x28, HLE::Wrap<GetSystemTick>,        "GetSystemTick"},
     {0x29, nullptr,                         "GetHandleInfo"},
     {0x2A, nullptr,                         "GetSystemInfo"},
-    {0x2B, nullptr,                         "GetProcessInfo"},
+    {0x2B, HLE::Wrap<GetProcessInfo>,       "GetProcessInfo"},
     {0x2C, nullptr,                         "GetThreadInfo"},
     {0x2D, HLE::Wrap<ConnectToPort>,        "ConnectToPort"},
     {0x2E, nullptr,                         "SendSyncRequest1"},
@@ -841,8 +973,11 @@ static const FunctionDef* GetSVCInfo(u32 func_num) {
     return &SVC_Table[func_num];
 }
 
+MICROPROFILE_DEFINE(Kernel_SVC, "Kernel", "SVC", MP_RGB(70, 200, 70));
+
 void CallSVC(u32 immediate) {
     Common::Profiling::ScopeTimer timer_svc(profiler_svc);
+    MICROPROFILE_SCOPE(Kernel_SVC);
 
     const FunctionDef* info = GetSVCInfo(immediate);
     if (info) {

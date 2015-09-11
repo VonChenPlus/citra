@@ -6,15 +6,12 @@
 
 #include <array>
 
-#include "generated/gl_3_2_core.h"
-
-#include "common/math_util.h"
+#include <glad/glad.h>
 
 #include "core/hw/gpu.h"
 
 #include "video_core/renderer_base.h"
 #include "video_core/renderer_opengl/gl_state.h"
-#include "video_core/renderer_opengl/gl_rasterizer.h"
 
 class EmuWindow;
 
@@ -63,9 +60,6 @@ private:
     // Fills active OpenGL texture with the given RGB color.
     void LoadColorToActiveGLTexture(u8 color_r, u8 color_g, u8 color_b,
                                     const TextureInfo& texture);
-
-    /// Computes the viewport rectangle
-    MathUtil::Rectangle<unsigned> GetViewportExtent();
 
     EmuWindow*  render_window;                    ///< Handle to render window
     u32         last_mode;                        ///< Last render mode

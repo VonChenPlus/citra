@@ -2,7 +2,45 @@
 # dependent libraries.
 cmake_minimum_required(VERSION 2.8.11)
 
+function(download_bundled_external remote_path lib_name prefix_var)
+    set(prefix "${CMAKE_BINARY_DIR}/externals/${lib_name}")
+    if (NOT EXISTS "${prefix}")
+        message(STATUS "Downloading binaries for ${lib_name}...")
+        file(DOWNLOAD
+            https://github.com/citra-emu/ext-windows-bin/raw/master/${remote_path}${lib_name}.7z
+            "${CMAKE_BINARY_DIR}/externals/${lib_name}.7z" SHOW_PROGRESS)
+        execute_process(COMMAND ${CMAKE_COMMAND} -E tar xf "${CMAKE_BINARY_DIR}/externals/${lib_name}.7z"
+            WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/externals")
+    endif()
+    message(STATUS "Using bundled binaries at ${prefix}")
+    set(${prefix_var} "${prefix}" PARENT_SCOPE)
+endfunction()
+
+include(CheckSymbolExists)
+function(detect_architecture symbol arch)
+    if (NOT DEFINED ARCHITECTURE)
+        set(CMAKE_REQUIRED_QUIET 1)
+        check_symbol_exists("${symbol}" "" ARCHITECTURE_${arch})
+        unset(CMAKE_REQUIRED_QUIET)
+
+        # The output variable needs to be unique across invocations otherwise
+        # CMake's crazy scope rules will keep it defined
+        if (ARCHITECTURE_${arch})
+            set(ARCHITECTURE "${arch}" PARENT_SCOPE)
+            set(ARCHITECTURE_${arch} 1 PARENT_SCOPE)
+            add_definitions(-DARCHITECTURE_${arch}=1)
+        endif()
+    endif()
+endfunction()
+
 project(citra)
+
+option(ENABLE_GLFW "Enable the GLFW frontend" ON)
+option(CITRA_USE_BUNDLED_GLFW "Download bundled GLFW binaries" OFF)
+
+option(ENABLE_QT "Enable the Qt frontend" ON)
+option(CITRA_USE_BUNDLED_QT "Download bundled Qt binaries" OFF)
+option(CITRA_FORCE_QT4 "Use Qt4 even if Qt5 is available." OFF)
 
 if(NOT EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/.git/hooks/pre-commit)
     message(STATUS "Copying pre-commit hook")
@@ -10,9 +48,30 @@ if(NOT EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/.git/hooks/pre-commit)
         DESTINATION ${CMAKE_CURRENT_SOURCE_DIR}/.git/hooks)
 endif()
 
+if (MSVC)
+    detect_architecture("_M_AMD64" x86_64)
+    detect_architecture("_M_IX86" x86)
+    detect_architecture("_M_ARM" ARM)
+else()
+    detect_architecture("__x86_64__" x86_64)
+    detect_architecture("__i386__" x86)
+    detect_architecture("__arm__" ARM)
+endif()
+if (NOT DEFINED ARCHITECTURE)
+    set(ARCHITECTURE "GENERIC")
+    set(ARCHITECTURE_GENERIC 1)
+    add_definitions(-DARCHITECTURE_GENERIC=1)
+endif()
+message(STATUS "Target architecture: ${ARCHITECTURE}")
+
 if (NOT MSVC)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11 -Wno-attributes -pthread")
     set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -pthread")
+
+    if (ARCHITECTURE_x86_64)
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -msse4.1")
+        set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -msse4.1")
+    endif()
 else()
     # Silence "deprecation" warnings
     add_definitions(/D_CRT_SECURE_NO_WARNINGS /D_CRT_NONSTDC_NO_DEPRECATE)
@@ -63,7 +122,7 @@ else()
     message(STATUS "libpng not found. Some debugging features have been disabled.")
 endif()
 
-find_package(Boost 1.57.0)
+find_package(Boost 1.57.0 QUIET)
 if (Boost_FOUND)
     include_directories(${Boost_INCLUDE_DIRS})
 else()
@@ -77,60 +136,28 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/externals/cmake-modules")
 find_package(OpenGL REQUIRED)
 include_directories(${OPENGL_INCLUDE_DIR})
 
-option(ENABLE_GLFW "Enable the GLFW frontend" ON)
 if (ENABLE_GLFW)
-    if (WIN32)
+    if (CITRA_USE_BUNDLED_GLFW)
         # Detect toolchain and platform
-        if (MSVC)
-            if (CMAKE_SIZEOF_VOID_P EQUAL 8)
-                set(TMP_ARCH "x64")
-            elseif (CMAKE_SIZEOF_VOID_P EQUAL 4)
-                set(TMP_ARCH "Win32")
-            else()
-                set(TMP_ARCH "UNKNOWN")
-                message(SEND_ERROR "Couldn't detect your compiler's architecture, you'll have to manually specify the GLFW library to use. (Try checking CMakeOutput.log to find out why.)")
-            endif()
-
-            if (MSVC11) # Visual C++ 2012
-                set(TMP_TOOLSET "v110")
-            elseif (MSVC12) # Visual C++ 2013
-                set(TMP_TOOLSET "v120")
-            else()
-                set(TMP_TOOLSET "UNSUPPORTED")
-                message(SEND_ERROR "We don't supply GLFW binaries for your version of MSVC, you might have to provide them yourself.")
-            endif()
-
-            set(TMP_TOOLSET "msvc_${TMP_TOOLSET}-${TMP_ARCH}")
+        if (MSVC14 AND ARCHITECTURE_x86_64)
+            set(GLFW_VER "glfw-3.1.1-msvc2015_64")
+        elseif (MSVC12 AND ARCHITECTURE_x86_64)
+            set(GLFW_VER "glfw-3.1.1-msvc2013_64")
         else()
-            # Assume mingw
-            if (CMAKE_SIZEOF_VOID_P EQUAL 8)
-                set(TMP_ARCH "x86_64")
-            elseif (CMAKE_SIZEOF_VOID_P EQUAL 4)
-                set(TMP_ARCH "i686")
-            else()
-                set(TMP_ARCH "UNKNOWN")
-                message(SEND_ERROR "Couldn't detect your compiler's architecture, you'll have to manually specify the GLFW library to use.")
-            endif()
-
-            set(TMP_TOOLSET "mingw-${TMP_ARCH}")
+            message(FATAL_ERROR "No bundled GLFW binaries for your toolchain. Disable CITRA_USE_BUNDLED_GLFW and provide your own.")
         endif()
 
-        set(GLFW_PREFIX "${CMAKE_CURRENT_SOURCE_DIR}/externals/glfw-3.1.1.bin")
+        if (DEFINED GLFW_VER)
+            download_bundled_external("glfw/" ${GLFW_VER} GLFW_PREFIX)
+        endif()
+
         set(GLFW_INCLUDE_DIRS "${GLFW_PREFIX}/include" CACHE PATH "Path to GLFW3 headers")
-        set(GLFW_LIBRARY_DIRS "${GLFW_PREFIX}/lib-${TMP_TOOLSET}" CACHE PATH "Path to GLFW3 libraries")
-
-        # Clean up after ourselves
-        unset(TMP_TOOLSET)
-        unset(TMP_ARCH)
-
+        set(GLFW_LIBRARY_DIRS "${GLFW_PREFIX}/lib" CACHE PATH "Path to GLFW3 libraries")
         set(GLFW_LIBRARIES glfw3)
     else()
         find_package(PkgConfig REQUIRED)
         pkg_search_module(GLFW REQUIRED glfw3)
     endif()
-
-    include_directories(${GLFW_INCLUDE_DIRS})
-    link_directories(${GLFW_LIBRARY_DIRS})
 endif()
 
 IF (APPLE)
@@ -143,7 +170,8 @@ IF (APPLE)
     set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -stdlib=libc++")
 ELSEIF(MINGW)
     # GCC does not support codecvt, so use iconv instead
-    set(PLATFORM_LIBRARIES winmm ws2_32 iconv)
+    # PSAPI is the Process Status API
+    set(PLATFORM_LIBRARIES winmm ws2_32 psapi iconv)
 
     # WSAPoll functionality doesn't exist before WinNT 6.x (Vista and up)
     add_definitions(-D_WIN32_WINNT=0x0600)
@@ -153,23 +181,33 @@ ELSE()
     set(PLATFORM_LIBRARIES rt)
 ENDIF (APPLE)
 
-option(ENABLE_QT "Enable the Qt frontend" ON)
-option(CITRA_FORCE_QT4 "Use Qt4 even if Qt5 is available." OFF)
 if (ENABLE_QT)
-    # Set CMAKE_PREFIX_PATH if QTDIR is defined in the environment This allows CMake to
-    # automatically find the Qt packages on Windows
-    if (DEFINED ENV{QTDIR})
-        list(APPEND CMAKE_PREFIX_PATH "$ENV{QTDIR}")
+    if (CITRA_USE_BUNDLED_QT)
+        if (MSVC14 AND ARCHITECTURE_x86_64)
+            set(QT_VER qt-5.5-msvc2015_64)
+        else()
+            message(FATAL_ERROR "No bundled Qt binaries for your toolchain. Disable CITRA_USE_BUNDLED_QT and provide your own.")
+        endif()
+
+        if (DEFINED QT_VER)
+            download_bundled_external("qt/" ${QT_VER} QT_PREFIX)
+        endif()
+
+        set(QT_PREFIX_HINT HINTS "${QT_PREFIX}")
+    else()
+        # Passing an empty HINTS seems to cause default system paths to get ignored in CMake 2.8 so
+        # make sure to not pass anything if we don't have one.
+        set(QT_PREFIX_HINT)
     endif()
 
     if (NOT CITRA_FORCE_QT4)
-        find_package(Qt5 COMPONENTS Widgets OpenGL)
+        find_package(Qt5 COMPONENTS Widgets OpenGL ${QT_PREFIX_HINT})
         set(CITRA_QT_LIBS Qt5::Widgets Qt5::OpenGL)
     endif()
 
     if (CITRA_FORCE_QT4 OR NOT Qt5_FOUND)
         # Try to fallback to Qt4
-        find_package(Qt4 REQUIRED COMPONENTS QtGui QtOpenGL)
+        find_package(Qt4 REQUIRED COMPONENTS QtGui QtOpenGL ${QT_PREFIX_HINT})
         set(CITRA_QT_LIBS Qt4::QtGui Qt4::QtOpenGL)
     endif()
 endif()
@@ -200,6 +238,8 @@ set(INI_PREFIX "${CMAKE_CURRENT_SOURCE_DIR}/externals/inih")
 include_directories(${INI_PREFIX})
 add_subdirectory(${INI_PREFIX})
 
+add_subdirectory(externals/glad)
+include_directories(externals/microprofile)
 include_directories(externals/nihstro/include)
 
 if (MSVC)

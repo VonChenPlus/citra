@@ -4,7 +4,7 @@
 
 #pragma once
 
-#include "generated/gl_3_2_core.h"
+#include <glad/glad.h>
 
 class OpenGLState {
 public:
@@ -32,6 +32,9 @@ public:
         GLint test_ref; // GL_STENCIL_REF
         GLuint test_mask; // GL_STENCIL_VALUE_MASK
         GLuint write_mask; // GL_STENCIL_WRITEMASK
+        GLenum action_stencil_fail; // GL_STENCIL_FAIL
+        GLenum action_depth_fail; // GL_STENCIL_PASS_DEPTH_FAIL
+        GLenum action_depth_pass; // GL_STENCIL_PASS_DEPTH_PASS
     } stencil;
 
     struct {
@@ -53,8 +56,8 @@ public:
 
     // 3 texture units - one for each that is used in PICA fragment shader emulation
     struct {
-        bool enabled_2d; // GL_TEXTURE_2D
         GLuint texture_2d; // GL_TEXTURE_BINDING_2D
+        GLuint sampler; // GL_SAMPLER_BINDING
     } texture_units[3];
 
     struct {
@@ -73,6 +76,13 @@ public:
 
     /// Apply this state as the current OpenGL state
     void Apply();
+
+    static void ResetTexture(GLuint id);
+    static void ResetSampler(GLuint id);
+    static void ResetProgram(GLuint id);
+    static void ResetBuffer(GLuint id);
+    static void ResetVertexArray(GLuint id);
+    static void ResetFramebuffer(GLuint id);
 
 private:
     static OpenGLState cur_state;

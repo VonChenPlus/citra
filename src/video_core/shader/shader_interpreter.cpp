@@ -2,18 +2,14 @@
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
-#include <boost/container/static_vector.hpp>
-#include <boost/range/algorithm.hpp>
-
 #include <common/file_util.h>
 
 #include <nihstro/shader_bytecode.h>
 
-#include "common/profiler.h"
+#include "video_core/pica.h"
 
-#include "pica.h"
-#include "vertex_shader.h"
-#include "debug_utils/debug_utils.h"
+#include "shader.h"
+#include "shader_interpreter.h"
 
 using nihstro::OpCode;
 using nihstro::Instruction;
@@ -23,44 +19,10 @@ using nihstro::SwizzlePattern;
 
 namespace Pica {
 
-namespace VertexShader {
+namespace Shader {
 
-struct VertexShaderState {
-    u32 program_counter;
-
-    const float24* input_register_table[16];
-    Math::Vec4<float24> output_registers[16];
-
-    Math::Vec4<float24> temporary_registers[16];
-    bool conditional_code[2];
-
-    // Two Address registers and one loop counter
-    // TODO: How many bits do these actually have?
-    s32 address_registers[3];
-
-    enum {
-        INVALID_ADDRESS = 0xFFFFFFFF
-    };
-
-    struct CallStackElement {
-        u32 final_address;  // Address upon which we jump to return_address
-        u32 return_address; // Where to jump when leaving scope
-        u8 repeat_counter;  // How often to repeat until this call stack element is removed
-        u8 loop_increment;  // Which value to add to the loop counter after an iteration
-                            // TODO: Should this be a signed value? Does it even matter?
-        u32 loop_address;   // The address where we'll return to after each loop iteration
-    };
-
-    // TODO: Is there a maximal size for this?
-    boost::container::static_vector<CallStackElement, 16> call_stack;
-
-    struct {
-        u32 max_offset; // maximum program counter ever reached
-        u32 max_opdesc_id; // maximum swizzle pattern index ever used
-    } debug;
-};
-
-static void ProcessShaderCode(VertexShaderState& state) {
+template<bool Debug>
+void RunInterpreter(UnitState<Debug>& state) {
     const auto& uniforms = g_state.vs.uniforms;
     const auto& swizzle_data = g_state.vs.swizzle_data;
     const auto& program_code = g_state.vs.program_code;
@@ -68,7 +30,9 @@ static void ProcessShaderCode(VertexShaderState& state) {
     // Placeholder for invalid inputs
     static float24 dummy_vec4_float24[4];
 
-    while (true) {
+    unsigned iteration = 0;
+    bool exit_loop = false;
+    while (!exit_loop) {
         if (!state.call_stack.empty()) {
             auto& top = state.call_stack.back();
             if (state.program_counter == top.final_address) {
@@ -86,25 +50,28 @@ static void ProcessShaderCode(VertexShaderState& state) {
             }
         }
 
-        bool exit_loop = false;
         const Instruction instr = { program_code[state.program_counter] };
         const SwizzlePattern swizzle = { swizzle_data[instr.common.operand_desc_id] };
 
-        static auto call = [](VertexShaderState& state, u32 offset, u32 num_instructions,
+        static auto call = [](UnitState<Debug>& state, u32 offset, u32 num_instructions,
                               u32 return_offset, u8 repeat_count, u8 loop_increment) {
             state.program_counter = offset - 1; // -1 to make sure when incrementing the PC we end up at the correct offset
             ASSERT(state.call_stack.size() < state.call_stack.capacity());
             state.call_stack.push_back({ offset + num_instructions, return_offset, repeat_count, loop_increment, offset });
         };
+        Record<DebugDataRecord::CUR_INSTR>(state.debug, iteration, state.program_counter);
+        if (iteration > 0)
+            Record<DebugDataRecord::NEXT_INSTR>(state.debug, iteration - 1, state.program_counter);
+
         state.debug.max_offset = std::max<u32>(state.debug.max_offset, 1 + state.program_counter);
 
         auto LookupSourceRegister = [&](const SourceRegister& source_reg) -> const float24* {
             switch (source_reg.GetRegisterType()) {
             case RegisterType::Input:
-                return state.input_register_table[source_reg.GetIndex()];
+                return &state.registers.input[source_reg.GetIndex()].x;
 
             case RegisterType::Temporary:
-                return &state.temporary_registers[source_reg.GetIndex()].x;
+                return &state.registers.temporary[source_reg.GetIndex()].x;
 
             case RegisterType::FloatUniform:
                 return &uniforms.f[source_reg.GetIndex()].x;
@@ -153,8 +120,8 @@ static void ProcessShaderCode(VertexShaderState& state) {
                 src2[3] = src2[3] * float24::FromFloat32(-1);
             }
 
-            float24* dest = (instr.common.dest.Value() < 0x10) ? &state.output_registers[instr.common.dest.Value().GetIndex()][0]
-                        : (instr.common.dest.Value() < 0x20) ? &state.temporary_registers[instr.common.dest.Value().GetIndex()][0]
+            float24* dest = (instr.common.dest.Value() < 0x10) ? &state.registers.output[instr.common.dest.Value().GetIndex()][0]
+                        : (instr.common.dest.Value() < 0x20) ? &state.registers.temporary[instr.common.dest.Value().GetIndex()][0]
                         : dummy_vec4_float24;
 
             state.debug.max_opdesc_id = std::max<u32>(state.debug.max_opdesc_id, 1+instr.common.operand_desc_id);
@@ -162,60 +129,93 @@ static void ProcessShaderCode(VertexShaderState& state) {
             switch (instr.opcode.Value().EffectiveOpCode()) {
             case OpCode::Id::ADD:
             {
+                Record<DebugDataRecord::SRC1>(state.debug, iteration, src1);
+                Record<DebugDataRecord::SRC2>(state.debug, iteration, src2);
+                Record<DebugDataRecord::DEST_IN>(state.debug, iteration, dest);
                 for (int i = 0; i < 4; ++i) {
                     if (!swizzle.DestComponentEnabled(i))
                         continue;
 
                     dest[i] = src1[i] + src2[i];
                 }
-
+                Record<DebugDataRecord::DEST_OUT>(state.debug, iteration, dest);
                 break;
             }
 
             case OpCode::Id::MUL:
             {
+                Record<DebugDataRecord::SRC1>(state.debug, iteration, src1);
+                Record<DebugDataRecord::SRC2>(state.debug, iteration, src2);
+                Record<DebugDataRecord::DEST_IN>(state.debug, iteration, dest);
                 for (int i = 0; i < 4; ++i) {
                     if (!swizzle.DestComponentEnabled(i))
                         continue;
 
                     dest[i] = src1[i] * src2[i];
                 }
-
+                Record<DebugDataRecord::DEST_OUT>(state.debug, iteration, dest);
                 break;
             }
 
             case OpCode::Id::FLR:
+                Record<DebugDataRecord::SRC1>(state.debug, iteration, src1);
+                Record<DebugDataRecord::DEST_IN>(state.debug, iteration, dest);
                 for (int i = 0; i < 4; ++i) {
                     if (!swizzle.DestComponentEnabled(i))
                         continue;
 
                     dest[i] = float24::FromFloat32(std::floor(src1[i].ToFloat32()));
                 }
+                Record<DebugDataRecord::DEST_OUT>(state.debug, iteration, dest);
                 break;
 
             case OpCode::Id::MAX:
+                Record<DebugDataRecord::SRC1>(state.debug, iteration, src1);
+                Record<DebugDataRecord::SRC2>(state.debug, iteration, src2);
+                Record<DebugDataRecord::DEST_IN>(state.debug, iteration, dest);
                 for (int i = 0; i < 4; ++i) {
                     if (!swizzle.DestComponentEnabled(i))
                         continue;
 
-                    dest[i] = std::max(src1[i], src2[i]);
+                    // NOTE: Exact form required to match NaN semantics to hardware:
+                    //   max(0, NaN) -> NaN
+                    //   max(NaN, 0) -> 0
+                    dest[i] = (src1[i] > src2[i]) ? src1[i] : src2[i];
                 }
+                Record<DebugDataRecord::DEST_OUT>(state.debug, iteration, dest);
                 break;
 
             case OpCode::Id::MIN:
+                Record<DebugDataRecord::SRC1>(state.debug, iteration, src1);
+                Record<DebugDataRecord::SRC2>(state.debug, iteration, src2);
+                Record<DebugDataRecord::DEST_IN>(state.debug, iteration, dest);
                 for (int i = 0; i < 4; ++i) {
                     if (!swizzle.DestComponentEnabled(i))
                         continue;
 
-                    dest[i] = std::min(src1[i], src2[i]);
+                    // NOTE: Exact form required to match NaN semantics to hardware:
+                    //   min(0, NaN) -> NaN
+                    //   min(NaN, 0) -> 0
+                    dest[i] = (src1[i] < src2[i]) ? src1[i] : src2[i];
                 }
+                Record<DebugDataRecord::DEST_OUT>(state.debug, iteration, dest);
                 break;
 
             case OpCode::Id::DP3:
             case OpCode::Id::DP4:
+            case OpCode::Id::DPH:
+            case OpCode::Id::DPHI:
             {
+                Record<DebugDataRecord::SRC1>(state.debug, iteration, src1);
+                Record<DebugDataRecord::SRC2>(state.debug, iteration, src2);
+                Record<DebugDataRecord::DEST_IN>(state.debug, iteration, dest);
+
+                OpCode::Id opcode = instr.opcode.Value().EffectiveOpCode();
+                if (opcode == OpCode::Id::DPH || opcode == OpCode::Id::DPHI)
+                    src1[3] = float24::FromFloat32(1.0f);
+
                 float24 dot = float24::FromFloat32(0.f);
-                int num_components = (instr.opcode.Value() == OpCode::Id::DP3) ? 3 : 4;
+                int num_components = (opcode == OpCode::Id::DP3) ? 3 : 4;
                 for (int i = 0; i < num_components; ++i)
                     dot = dot + src1[i] * src2[i];
 
@@ -225,41 +225,45 @@ static void ProcessShaderCode(VertexShaderState& state) {
 
                     dest[i] = dot;
                 }
+                Record<DebugDataRecord::DEST_OUT>(state.debug, iteration, dest);
                 break;
             }
 
             // Reciprocal
             case OpCode::Id::RCP:
             {
+                Record<DebugDataRecord::SRC1>(state.debug, iteration, src1);
+                Record<DebugDataRecord::DEST_IN>(state.debug, iteration, dest);
+                float24 rcp_res = float24::FromFloat32(1.0f / src1[0].ToFloat32());
                 for (int i = 0; i < 4; ++i) {
                     if (!swizzle.DestComponentEnabled(i))
                         continue;
 
-                    // TODO: Be stable against division by zero!
-                    // TODO: I think this might be wrong... we should only use one component here
-                    dest[i] = float24::FromFloat32(1.0f / src1[i].ToFloat32());
+                    dest[i] = rcp_res;
                 }
-
+                Record<DebugDataRecord::DEST_OUT>(state.debug, iteration, dest);
                 break;
             }
 
             // Reciprocal Square Root
             case OpCode::Id::RSQ:
             {
+                Record<DebugDataRecord::SRC1>(state.debug, iteration, src1);
+                Record<DebugDataRecord::DEST_IN>(state.debug, iteration, dest);
+                float24 rsq_res = float24::FromFloat32(1.0f / std::sqrt(src1[0].ToFloat32()));
                 for (int i = 0; i < 4; ++i) {
                     if (!swizzle.DestComponentEnabled(i))
                         continue;
 
-                    // TODO: Be stable against division by zero!
-                    // TODO: I think this might be wrong... we should only use one component here
-                    dest[i] = float24::FromFloat32(1.0f / sqrt(src1[i].ToFloat32()));
+                    dest[i] = rsq_res;
                 }
-
+                Record<DebugDataRecord::DEST_OUT>(state.debug, iteration, dest);
                 break;
             }
 
             case OpCode::Id::MOVA:
             {
+                Record<DebugDataRecord::SRC1>(state.debug, iteration, src1);
                 for (int i = 0; i < 2; ++i) {
                     if (!swizzle.DestComponentEnabled(i))
                         continue;
@@ -267,32 +271,55 @@ static void ProcessShaderCode(VertexShaderState& state) {
                     // TODO: Figure out how the rounding is done on hardware
                     state.address_registers[i] = static_cast<s32>(src1[i].ToFloat32());
                 }
-
+                Record<DebugDataRecord::ADDR_REG_OUT>(state.debug, iteration, state.address_registers);
                 break;
             }
 
             case OpCode::Id::MOV:
             {
+                Record<DebugDataRecord::SRC1>(state.debug, iteration, src1);
+                Record<DebugDataRecord::DEST_IN>(state.debug, iteration, dest);
                 for (int i = 0; i < 4; ++i) {
                     if (!swizzle.DestComponentEnabled(i))
                         continue;
 
                     dest[i] = src1[i];
                 }
+                Record<DebugDataRecord::DEST_OUT>(state.debug, iteration, dest);
                 break;
             }
 
+            case OpCode::Id::SGE:
+            case OpCode::Id::SGEI:
+                Record<DebugDataRecord::SRC1>(state.debug, iteration, src1);
+                Record<DebugDataRecord::SRC2>(state.debug, iteration, src2);
+                Record<DebugDataRecord::DEST_IN>(state.debug, iteration, dest);
+                for (int i = 0; i < 4; ++i) {
+                    if (!swizzle.DestComponentEnabled(i))
+                        continue;
+
+                    dest[i] = (src1[i] >= src2[i]) ? float24::FromFloat32(1.0f) : float24::FromFloat32(0.0f);
+                }
+                Record<DebugDataRecord::DEST_OUT>(state.debug, iteration, dest);
+                break;
+
             case OpCode::Id::SLT:
             case OpCode::Id::SLTI:
+                Record<DebugDataRecord::SRC1>(state.debug, iteration, src1);
+                Record<DebugDataRecord::SRC2>(state.debug, iteration, src2);
+                Record<DebugDataRecord::DEST_IN>(state.debug, iteration, dest);
                 for (int i = 0; i < 4; ++i) {
                     if (!swizzle.DestComponentEnabled(i))
                         continue;
 
                     dest[i] = (src1[i] < src2[i]) ? float24::FromFloat32(1.0f) : float24::FromFloat32(0.0f);
                 }
+                Record<DebugDataRecord::DEST_OUT>(state.debug, iteration, dest);
                 break;
 
             case OpCode::Id::CMP:
+                Record<DebugDataRecord::SRC1>(state.debug, iteration, src1);
+                Record<DebugDataRecord::SRC2>(state.debug, iteration, src2);
                 for (int i = 0; i < 2; ++i) {
                     // TODO: Can you restrict to one compare via dest masking?
 
@@ -300,27 +327,27 @@ static void ProcessShaderCode(VertexShaderState& state) {
                     auto op = (i == 0) ? compare_op.x.Value() : compare_op.y.Value();
 
                     switch (op) {
-                        case compare_op.Equal:
+                        case Instruction::Common::CompareOpType::Equal:
                             state.conditional_code[i] = (src1[i] == src2[i]);
                             break;
 
-                        case compare_op.NotEqual:
+                        case Instruction::Common::CompareOpType::NotEqual:
                             state.conditional_code[i] = (src1[i] != src2[i]);
                             break;
 
-                        case compare_op.LessThan:
+                        case Instruction::Common::CompareOpType::LessThan:
                             state.conditional_code[i] = (src1[i] <  src2[i]);
                             break;
 
-                        case compare_op.LessEqual:
+                        case Instruction::Common::CompareOpType::LessEqual:
                             state.conditional_code[i] = (src1[i] <= src2[i]);
                             break;
 
-                        case compare_op.GreaterThan:
+                        case Instruction::Common::CompareOpType::GreaterThan:
                             state.conditional_code[i] = (src1[i] >  src2[i]);
                             break;
 
-                        case compare_op.GreaterEqual:
+                        case Instruction::Common::CompareOpType::GreaterEqual:
                             state.conditional_code[i] = (src1[i] >= src2[i]);
                             break;
 
@@ -329,7 +356,44 @@ static void ProcessShaderCode(VertexShaderState& state) {
                             break;
                     }
                 }
+                Record<DebugDataRecord::CMP_RESULT>(state.debug, iteration, state.conditional_code);
                 break;
+
+            case OpCode::Id::EX2:
+            {
+                Record<DebugDataRecord::SRC1>(state.debug, iteration, src1);
+                Record<DebugDataRecord::DEST_IN>(state.debug, iteration, dest);
+
+                // EX2 only takes first component exp2 and writes it to all dest components
+                float24 ex2_res = float24::FromFloat32(std::exp2(src1[0].ToFloat32()));
+                for (int i = 0; i < 4; ++i) {
+                    if (!swizzle.DestComponentEnabled(i))
+                        continue;
+
+                    dest[i] = ex2_res;
+                }
+
+                Record<DebugDataRecord::DEST_OUT>(state.debug, iteration, dest);
+                break;
+            }
+
+            case OpCode::Id::LG2:
+            {
+                Record<DebugDataRecord::SRC1>(state.debug, iteration, src1);
+                Record<DebugDataRecord::DEST_IN>(state.debug, iteration, dest);
+
+                // LG2 only takes the first component log2 and writes it to all dest components
+                float24 lg2_res = float24::FromFloat32(std::log2(src1[0].ToFloat32()));
+                for (int i = 0; i < 4; ++i) {
+                    if (!swizzle.DestComponentEnabled(i))
+                        continue;
+
+                    dest[i] = lg2_res;
+                }
+
+                Record<DebugDataRecord::DEST_OUT>(state.debug, iteration, dest);
+                break;
+            }
 
             default:
                 LOG_ERROR(HW_GPU, "Unhandled arithmetic instruction: 0x%02x (%s): 0x%08x",
@@ -394,16 +458,21 @@ static void ProcessShaderCode(VertexShaderState& state) {
                     src3[3] = src3[3] * float24::FromFloat32(-1);
                 }
 
-                float24* dest = (instr.mad.dest.Value() < 0x10) ? &state.output_registers[instr.mad.dest.Value().GetIndex()][0]
-                            : (instr.mad.dest.Value() < 0x20) ? &state.temporary_registers[instr.mad.dest.Value().GetIndex()][0]
+                float24* dest = (instr.mad.dest.Value() < 0x10) ? &state.registers.output[instr.mad.dest.Value().GetIndex()][0]
+                            : (instr.mad.dest.Value() < 0x20) ? &state.registers.temporary[instr.mad.dest.Value().GetIndex()][0]
                             : dummy_vec4_float24;
 
+                Record<DebugDataRecord::SRC1>(state.debug, iteration, src1);
+                Record<DebugDataRecord::SRC2>(state.debug, iteration, src2);
+                Record<DebugDataRecord::SRC3>(state.debug, iteration, src3);
+                Record<DebugDataRecord::DEST_IN>(state.debug, iteration, dest);
                 for (int i = 0; i < 4; ++i) {
                     if (!swizzle.DestComponentEnabled(i))
                         continue;
 
                     dest[i] = src1[i] * src2[i] + src3[i];
                 }
+                Record<DebugDataRecord::DEST_OUT>(state.debug, iteration, dest);
             } else {
                 LOG_ERROR(HW_GPU, "Unhandled multiply-add instruction: 0x%02x (%s): 0x%08x",
                           (int)instr.opcode.Value().EffectiveOpCode(), instr.opcode.Value().GetInfo().name, instr.hex);
@@ -413,7 +482,7 @@ static void ProcessShaderCode(VertexShaderState& state) {
 
         default:
         {
-            static auto evaluate_condition = [](const VertexShaderState& state, bool refx, bool refy, Instruction::FlowControlType flow_control) {
+            static auto evaluate_condition = [](const UnitState<Debug>& state, bool refx, bool refy, Instruction::FlowControlType flow_control) {
                 bool results[2] = { refx == state.conditional_code[0],
                                     refy == state.conditional_code[1] };
 
@@ -439,12 +508,14 @@ static void ProcessShaderCode(VertexShaderState& state) {
                 break;
 
             case OpCode::Id::JMPC:
+                Record<DebugDataRecord::COND_CMP_IN>(state.debug, iteration, state.conditional_code);
                 if (evaluate_condition(state, instr.flow_control.refx, instr.flow_control.refy, instr.flow_control)) {
                     state.program_counter = instr.flow_control.dest_offset - 1;
                 }
                 break;
 
             case OpCode::Id::JMPU:
+                Record<DebugDataRecord::COND_BOOL_IN>(state.debug, iteration, uniforms.b[instr.flow_control.bool_uniform_id]);
                 if (uniforms.b[instr.flow_control.bool_uniform_id]) {
                     state.program_counter = instr.flow_control.dest_offset - 1;
                 }
@@ -458,6 +529,7 @@ static void ProcessShaderCode(VertexShaderState& state) {
                 break;
 
             case OpCode::Id::CALLU:
+                Record<DebugDataRecord::COND_BOOL_IN>(state.debug, iteration, uniforms.b[instr.flow_control.bool_uniform_id]);
                 if (uniforms.b[instr.flow_control.bool_uniform_id]) {
                     call(state,
                         instr.flow_control.dest_offset,
@@ -467,6 +539,7 @@ static void ProcessShaderCode(VertexShaderState& state) {
                 break;
 
             case OpCode::Id::CALLC:
+                Record<DebugDataRecord::COND_CMP_IN>(state.debug, iteration, state.conditional_code);
                 if (evaluate_condition(state, instr.flow_control.refx, instr.flow_control.refy, instr.flow_control)) {
                     call(state,
                         instr.flow_control.dest_offset,
@@ -479,6 +552,7 @@ static void ProcessShaderCode(VertexShaderState& state) {
                 break;
 
             case OpCode::Id::IFU:
+                Record<DebugDataRecord::COND_BOOL_IN>(state.debug, iteration, uniforms.b[instr.flow_control.bool_uniform_id]);
                 if (uniforms.b[instr.flow_control.bool_uniform_id]) {
                     call(state,
                          state.program_counter + 1,
@@ -497,6 +571,7 @@ static void ProcessShaderCode(VertexShaderState& state) {
             {
                 // TODO: Do we need to consider swizzlers here?
 
+                Record<DebugDataRecord::COND_CMP_IN>(state.debug, iteration, state.conditional_code);
                 if (evaluate_condition(state, instr.flow_control.refx, instr.flow_control.refy, instr.flow_control)) {
                     call(state,
                          state.program_counter + 1,
@@ -514,14 +589,19 @@ static void ProcessShaderCode(VertexShaderState& state) {
 
             case OpCode::Id::LOOP:
             {
-                state.address_registers[2] = uniforms.i[instr.flow_control.int_uniform_id].y;
+                Math::Vec4<u8> loop_param(uniforms.i[instr.flow_control.int_uniform_id].x,
+                                          uniforms.i[instr.flow_control.int_uniform_id].y,
+                                          uniforms.i[instr.flow_control.int_uniform_id].z,
+                                          uniforms.i[instr.flow_control.int_uniform_id].w);
+                state.address_registers[2] = loop_param.y;
 
+                Record<DebugDataRecord::LOOP_INT_IN>(state.debug, iteration, loop_param);
                 call(state,
                      state.program_counter + 1,
                      instr.flow_control.dest_offset - state.program_counter + 1,
                      instr.flow_control.dest_offset + 1,
-                     uniforms.i[instr.flow_control.int_uniform_id].x,
-                     uniforms.i[instr.flow_control.int_uniform_id].z);
+                     loop_param.x,
+                     loop_param.z);
                 break;
             }
 
@@ -536,93 +616,13 @@ static void ProcessShaderCode(VertexShaderState& state) {
         }
 
         ++state.program_counter;
-
-        if (exit_loop)
-            break;
+        ++iteration;
     }
 }
 
-static Common::Profiling::TimingCategory shader_category("Vertex Shader");
-
-OutputVertex RunShader(const InputVertex& input, int num_attributes, const Regs::ShaderConfig& config, const State::ShaderSetup& setup) {
-    Common::Profiling::ScopeTimer timer(shader_category);
-
-    VertexShaderState state;
-
-    state.program_counter = config.main_offset;
-    state.debug.max_offset = 0;
-    state.debug.max_opdesc_id = 0;
-
-    // Setup input register table
-    const auto& attribute_register_map = config.input_register_map;
-    float24 dummy_register;
-    boost::fill(state.input_register_table, &dummy_register);
-
-    if (num_attributes > 0) state.input_register_table[attribute_register_map.attribute0_register] = &input.attr[0].x;
-    if (num_attributes > 1) state.input_register_table[attribute_register_map.attribute1_register] = &input.attr[1].x;
-    if (num_attributes > 2) state.input_register_table[attribute_register_map.attribute2_register] = &input.attr[2].x;
-    if (num_attributes > 3) state.input_register_table[attribute_register_map.attribute3_register] = &input.attr[3].x;
-    if (num_attributes > 4) state.input_register_table[attribute_register_map.attribute4_register] = &input.attr[4].x;
-    if (num_attributes > 5) state.input_register_table[attribute_register_map.attribute5_register] = &input.attr[5].x;
-    if (num_attributes > 6) state.input_register_table[attribute_register_map.attribute6_register] = &input.attr[6].x;
-    if (num_attributes > 7) state.input_register_table[attribute_register_map.attribute7_register] = &input.attr[7].x;
-    if (num_attributes > 8) state.input_register_table[attribute_register_map.attribute8_register] = &input.attr[8].x;
-    if (num_attributes > 9) state.input_register_table[attribute_register_map.attribute9_register] = &input.attr[9].x;
-    if (num_attributes > 10) state.input_register_table[attribute_register_map.attribute10_register] = &input.attr[10].x;
-    if (num_attributes > 11) state.input_register_table[attribute_register_map.attribute11_register] = &input.attr[11].x;
-    if (num_attributes > 12) state.input_register_table[attribute_register_map.attribute12_register] = &input.attr[12].x;
-    if (num_attributes > 13) state.input_register_table[attribute_register_map.attribute13_register] = &input.attr[13].x;
-    if (num_attributes > 14) state.input_register_table[attribute_register_map.attribute14_register] = &input.attr[14].x;
-    if (num_attributes > 15) state.input_register_table[attribute_register_map.attribute15_register] = &input.attr[15].x;
-
-    state.conditional_code[0] = false;
-    state.conditional_code[1] = false;
-
-    ProcessShaderCode(state);
-#if PICA_DUMP_SHADERS
-    DebugUtils::DumpShader(setup.program_code.data(), state.debug.max_offset, setup.swizzle_data.data(),
-                           state.debug.max_opdesc_id, config.main_offset,
-                           g_state.regs.vs_output_attributes); // TODO: Don't hardcode VS here
-#endif
-
-    // Setup output data
-    OutputVertex ret;
-    // TODO(neobrain): Under some circumstances, up to 16 attributes may be output. We need to
-    // figure out what those circumstances are and enable the remaining outputs then.
-    for (int i = 0; i < 7; ++i) {
-        const auto& output_register_map = g_state.regs.vs_output_attributes[i]; // TODO: Don't hardcode VS here
-
-        u32 semantics[4] = {
-            output_register_map.map_x, output_register_map.map_y,
-            output_register_map.map_z, output_register_map.map_w
-        };
-
-        for (int comp = 0; comp < 4; ++comp) {
-            float24* out = ((float24*)&ret) + semantics[comp];
-            if (semantics[comp] != Regs::VSOutputAttributes::INVALID) {
-                *out = state.output_registers[i][comp];
-            } else {
-                // Zero output so that attributes which aren't output won't have denormals in them,
-                // which would slow us down later.
-                memset(out, 0, sizeof(*out));
-            }
-        }
-    }
-
-    // The hardware takes the absolute and saturates vertex colors like this, *before* doing interpolation
-    for (int i = 0; i < 4; ++i) {
-        ret.color[i] = float24::FromFloat32(
-            std::fmin(std::fabs(ret.color[i].ToFloat32()), 1.0f));
-    }
-
-    LOG_TRACE(Render_Software, "Output vertex: pos (%.2f, %.2f, %.2f, %.2f), col(%.2f, %.2f, %.2f, %.2f), tc0(%.2f, %.2f)",
-        ret.pos.x.ToFloat32(), ret.pos.y.ToFloat32(), ret.pos.z.ToFloat32(), ret.pos.w.ToFloat32(),
-        ret.color.x.ToFloat32(), ret.color.y.ToFloat32(), ret.color.z.ToFloat32(), ret.color.w.ToFloat32(),
-        ret.tc0.u().ToFloat32(), ret.tc0.v().ToFloat32());
-
-    return ret;
-}
-
+// Explicit instantiation
+template void RunInterpreter(UnitState<false>& state);
+template void RunInterpreter(UnitState<true>& state);
 
 } // namespace
 

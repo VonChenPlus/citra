@@ -1,5 +1,4 @@
 set(SRCS
-            renderer_opengl/generated/gl_3_2_core.c
             renderer_opengl/gl_rasterizer.cpp
             renderer_opengl/gl_rasterizer_cache.cpp
             renderer_opengl/gl_shader_util.cpp
@@ -11,14 +10,14 @@ set(SRCS
             pica.cpp
             primitive_assembly.cpp
             rasterizer.cpp
+            shader/shader.cpp
+            shader/shader_interpreter.cpp
             utils.cpp
-            vertex_shader.cpp
             video_core.cpp
             )
 
 set(HEADERS
             debug_utils/debug_utils.h
-            renderer_opengl/generated/gl_3_2_core.h
             renderer_opengl/gl_rasterizer.h
             renderer_opengl/gl_rasterizer_cache.h
             renderer_opengl/gl_resource_manager.h
@@ -35,14 +34,24 @@ set(HEADERS
             primitive_assembly.h
             rasterizer.h
             renderer_base.h
+            shader/shader.h
+            shader/shader_interpreter.h
             utils.h
-            vertex_shader.h
             video_core.h
             )
+
+if(ARCHITECTURE_x86_64)
+    set(SRCS ${SRCS}
+            shader/shader_jit_x64.cpp)
+
+    set(HEADERS ${HEADERS}
+            shader/shader_jit_x64.h)
+endif()
 
 create_directory_groups(${SRCS} ${HEADERS})
 
 add_library(video_core STATIC ${SRCS} ${HEADERS})
+target_link_libraries(video_core glad)
 
 if (PNG_FOUND)
     target_link_libraries(video_core ${PNG_LIBRARIES})

@@ -80,6 +80,11 @@ struct Regs {
             POSITION_Z   =  2,
             POSITION_W   =  3,
 
+            QUATERNION_X =  4,
+            QUATERNION_Y =  5,
+            QUATERNION_Z =  6,
+            QUATERNION_W =  7,
+
             COLOR_R      =  8,
             COLOR_G      =  9,
             COLOR_B      = 10,
@@ -89,6 +94,12 @@ struct Regs {
             TEXCOORD0_V  = 13,
             TEXCOORD1_U  = 14,
             TEXCOORD1_V  = 15,
+
+            // TODO: Not verified
+            VIEW_X       = 18,
+            VIEW_Y       = 19,
+            VIEW_Z       = 20,
+
             TEXCOORD2_U  = 22,
             TEXCOORD2_V  = 23,
 
@@ -124,6 +135,7 @@ struct Regs {
         };
 
         union {
+            u32 raw;
             BitField< 0, 8, u32> r;
             BitField< 8, 8, u32> g;
             BitField<16, 8, u32> b;
@@ -163,7 +175,7 @@ struct Regs {
         RGB565       =  3,
         RGBA4        =  4,
         IA8          =  5,
-
+        RG8          =  6,  ///< @note Also called HILO8 in 3DBrew.
         I8           =  7,
         A8           =  8,
         IA4          =  9,
@@ -204,6 +216,7 @@ struct Regs {
         case TextureFormat::RGB565:
         case TextureFormat::RGBA4:
         case TextureFormat::IA8:
+        case TextureFormat::RG8:
             return 4;
 
         case TextureFormat::I4:
@@ -327,6 +340,7 @@ struct Regs {
         };
 
         union {
+            u32 const_color;
             BitField< 0, 8, u32> const_r;
             BitField< 8, 8, u32> const_g;
             BitField<16, 8, u32> const_b;
@@ -377,6 +391,7 @@ struct Regs {
     TevStageConfig tev_stage5;
 
     union {
+        u32 raw;
         BitField< 0, 8, u32> r;
         BitField< 8, 8, u32> g;
         BitField<16, 8, u32> b;
@@ -429,8 +444,14 @@ struct Regs {
     };
 
     enum class StencilAction : u32 {
-        Keep = 0,
-        Xor  = 5,
+        Keep           = 0,
+        Zero           = 1,
+        Replace        = 2,
+        Increment      = 3,
+        Decrement      = 4,
+        Invert         = 5,
+        IncrementWrap  = 6,
+        DecrementWrap  = 7
     };
 
     struct {
@@ -455,6 +476,7 @@ struct Regs {
         };
 
         union {
+            u32 raw;
             BitField< 0, 8, u32> r;
             BitField< 8, 8, u32> g;
             BitField<16, 8, u32> b;
@@ -469,23 +491,29 @@ struct Regs {
 
         struct {
             union {
+                // Raw value of this register
+                u32 raw_func;
+
                 // If true, enable stencil testing
                 BitField< 0, 1, u32> enable;
 
                 // Comparison operation for stencil testing
                 BitField< 4, 3, CompareFunc> func;
 
-                // Value to calculate the new stencil value from
-                BitField< 8, 8, u32> replacement_value;
+                // Mask used to control writing to the stencil buffer
+                BitField< 8, 8, u32> write_mask;
 
                 // Value to compare against for stencil testing
                 BitField<16, 8, u32> reference_value;
 
                 // Mask to apply on stencil test inputs
-                BitField<24, 8, u32> mask;
+                BitField<24, 8, u32> input_mask;
             };
 
             union {
+                // Raw value of this register
+                u32 raw_op;
+
                 // Action to perform when the stencil test fails
                 BitField< 0, 3, StencilAction> action_stencil_fail;
 
@@ -745,7 +773,12 @@ struct Regs {
     // Number of vertices to render
     u32 num_vertices;
 
-    INSERT_PADDING_WORDS(0x5);
+    INSERT_PADDING_WORDS(0x1);
+
+    // The index of the first vertex to render
+    u32 vertex_offset;
+
+    INSERT_PADDING_WORDS(0x3);
 
     // These two trigger rendering of triangles
     u32 trigger_draw;
@@ -799,7 +832,9 @@ struct Regs {
 
     BitField<8, 2, TriangleTopology> triangle_topology;
 
-    INSERT_PADDING_WORDS(0x21);
+    u32 restart_primitive;
+
+    INSERT_PADDING_WORDS(0x20);
 
     struct ShaderConfig {
         BitField<0, 16, u32> bool_uniforms;
@@ -968,11 +1003,13 @@ ASSERT_REG_POSITION(framebuffer, 0x110);
 ASSERT_REG_POSITION(vertex_attributes, 0x200);
 ASSERT_REG_POSITION(index_array, 0x227);
 ASSERT_REG_POSITION(num_vertices, 0x228);
+ASSERT_REG_POSITION(vertex_offset, 0x22a);
 ASSERT_REG_POSITION(trigger_draw, 0x22e);
 ASSERT_REG_POSITION(trigger_draw_indexed, 0x22f);
 ASSERT_REG_POSITION(vs_default_attributes_setup, 0x232);
 ASSERT_REG_POSITION(command_buffer, 0x238);
 ASSERT_REG_POSITION(triangle_topology, 0x25e);
+ASSERT_REG_POSITION(restart_primitive, 0x25f);
 ASSERT_REG_POSITION(gs, 0x280);
 ASSERT_REG_POSITION(vs, 0x2b0);
 
@@ -1009,12 +1046,20 @@ struct float24 {
         return ret;
     }
 
+    static float24 Zero() {
+        return FromFloat32(0.f);
+    }
+
     // Not recommended for anything but logging
     float ToFloat32() const {
         return value;
     }
 
     float24 operator * (const float24& flt) const {
+        if ((this->value == 0.f && !std::isnan(flt.value)) ||
+            (flt.value == 0.f && !std::isnan(this->value)))
+            // PICA gives 0 instead of NaN when multiplying by inf
+            return Zero();
         return float24::FromFloat32(ToFloat32() * flt.ToFloat32());
     }
 
@@ -1031,7 +1076,11 @@ struct float24 {
     }
 
     float24& operator *= (const float24& flt) {
-        value *= flt.ToFloat32();
+        if ((this->value == 0.f && !std::isnan(flt.value)) ||
+            (flt.value == 0.f && !std::isnan(this->value)))
+            // PICA gives 0 instead of NaN when multiplying by inf
+            *this = Zero();
+        else value *= flt.ToFloat32();
         return *this;
     }
 
@@ -1083,6 +1132,7 @@ private:
     // TODO: Perform proper arithmetic on this!
     float value;
 };
+static_assert(sizeof(float24) == sizeof(float), "Shader JIT assumes float24 is implemented as a 32-bit float");
 
 /// Struct used to describe current Pica state
 struct State {
@@ -1092,7 +1142,10 @@ struct State {
     /// Vertex shader memory
     struct ShaderSetup {
         struct {
-            Math::Vec4<float24> f[96];
+            // The float uniforms are accessed by the shader JIT using SSE instructions, and are
+            // therefore required to be 16-byte aligned.
+            Math::Vec4<float24> MEMORY_ALIGNED16(f[96]);
+
             std::array<bool, 16> b;
             std::array<Math::Vec4<u8>, 4> i;
         } uniforms;

@@ -5,8 +5,11 @@
 #include <cstring>
 #include <memory>
 
+#include <glad/glad.h>
+
 #include "common/color.h"
 #include "common/math_util.h"
+#include "common/microprofile.h"
 #include "common/profiler.h"
 
 #include "core/hw/gpu.h"
@@ -19,8 +22,6 @@
 #include "video_core/renderer_opengl/gl_shaders.h"
 #include "video_core/renderer_opengl/gl_shader_util.h"
 #include "video_core/renderer_opengl/pica_to_gl.h"
-
-#include "generated/gl_3_2_core.h"
 
 static bool IsPassThroughTevStage(const Pica::Regs::TevStageConfig& stage) {
     return (stage.color_op == Pica::Regs::TevStageConfig::Operation::Replace &&
@@ -67,6 +68,12 @@ void RasterizerOpenGL::InitObjects() {
         uniform_tev_cfg.updates_combiner_buffer_color_alpha = glGetUniformLocation(shader.handle, (tev_ref_str + ".updates_combiner_buffer_color_alpha").c_str());
     }
 
+    // Create sampler objects
+    for (int i = 0; i < texture_samplers.size(); ++i) {
+        texture_samplers[i].Create();
+        state.texture_units[i].sampler = texture_samplers[i].sampler.handle;
+    }
+
     // Generate VBO and VAO
     vertex_buffer.Create();
     vertex_array.Create();
@@ -99,7 +106,6 @@ void RasterizerOpenGL::InitObjects() {
     fb_color_texture.texture.Create();
     ReconfigureColorTexture(fb_color_texture, Pica::Regs::ColorFormat::RGBA8, 1, 1);
 
-    state.texture_units[0].enabled_2d = true;
     state.texture_units[0].texture_2d = fb_color_texture.texture.handle;
     state.Apply();
 
@@ -115,7 +121,6 @@ void RasterizerOpenGL::InitObjects() {
     fb_depth_texture.texture.Create();
     ReconfigureDepthTexture(fb_depth_texture, Pica::Regs::DepthFormat::D16, 1, 1);
 
-    state.texture_units[0].enabled_2d = true;
     state.texture_units[0].texture_2d = fb_depth_texture.texture.handle;
     state.Apply();
 
@@ -204,12 +209,12 @@ void RasterizerOpenGL::Reset() {
     res_cache.FullFlush();
 }
 
-void RasterizerOpenGL::AddTriangle(const Pica::VertexShader::OutputVertex& v0,
-                                   const Pica::VertexShader::OutputVertex& v1,
-                                   const Pica::VertexShader::OutputVertex& v2) {
-    vertex_batch.push_back(HardwareVertex(v0));
-    vertex_batch.push_back(HardwareVertex(v1));
-    vertex_batch.push_back(HardwareVertex(v2));
+void RasterizerOpenGL::AddTriangle(const Pica::Shader::OutputVertex& v0,
+                                   const Pica::Shader::OutputVertex& v1,
+                                   const Pica::Shader::OutputVertex& v2) {
+    vertex_batch.emplace_back(v0);
+    vertex_batch.emplace_back(v1);
+    vertex_batch.emplace_back(v2);
 }
 
 void RasterizerOpenGL::DrawTriangles() {
@@ -232,8 +237,8 @@ void RasterizerOpenGL::DrawTriangles() {
     u32 cur_fb_depth_size = Pica::Regs::BytesPerDepthPixel(regs.framebuffer.depth_format)
                             * regs.framebuffer.GetWidth() * regs.framebuffer.GetHeight();
 
-    res_cache.NotifyFlush(cur_fb_color_addr, cur_fb_color_size);
-    res_cache.NotifyFlush(cur_fb_depth_addr, cur_fb_depth_size);
+    res_cache.NotifyFlush(cur_fb_color_addr, cur_fb_color_size, true);
+    res_cache.NotifyFlush(cur_fb_depth_addr, cur_fb_depth_size, true);
 }
 
 void RasterizerOpenGL::CommitFramebuffer() {
@@ -270,7 +275,8 @@ void RasterizerOpenGL::NotifyPicaRegisterChanged(u32 id) {
         break;
 
     // Stencil test
-    case PICA_REG_INDEX(output_merger.stencil_test):
+    case PICA_REG_INDEX(output_merger.stencil_test.raw_func):
+    case PICA_REG_INDEX(output_merger.stencil_test.raw_op):
         SyncStencilTest();
         break;
 
@@ -445,6 +451,45 @@ void RasterizerOpenGL::NotifyFlush(PAddr addr, u32 size) {
     res_cache.NotifyFlush(addr, size);
 }
 
+void RasterizerOpenGL::SamplerInfo::Create() {
+    sampler.Create();
+    mag_filter = min_filter = TextureConfig::Linear;
+    wrap_s = wrap_t = TextureConfig::Repeat;
+    border_color = 0;
+
+    glSamplerParameteri(sampler.handle, GL_TEXTURE_MIN_FILTER, GL_LINEAR); // default is GL_LINEAR_MIPMAP_LINEAR
+    // Other attributes have correct defaults
+}
+
+void RasterizerOpenGL::SamplerInfo::SyncWithConfig(const Pica::Regs::TextureConfig& config) {
+    GLuint s = sampler.handle;
+
+    if (mag_filter != config.mag_filter) {
+        mag_filter = config.mag_filter;
+        glSamplerParameteri(s, GL_TEXTURE_MAG_FILTER, PicaToGL::TextureFilterMode(mag_filter));
+    }
+    if (min_filter != config.min_filter) {
+        min_filter = config.min_filter;
+        glSamplerParameteri(s, GL_TEXTURE_MIN_FILTER, PicaToGL::TextureFilterMode(min_filter));
+    }
+
+    if (wrap_s != config.wrap_s) {
+        wrap_s = config.wrap_s;
+        glSamplerParameteri(s, GL_TEXTURE_WRAP_S, PicaToGL::WrapMode(wrap_s));
+    }
+    if (wrap_t != config.wrap_t) {
+        wrap_t = config.wrap_t;
+        glSamplerParameteri(s, GL_TEXTURE_WRAP_T, PicaToGL::WrapMode(wrap_t));
+    }
+
+    if (wrap_s == TextureConfig::ClampToBorder || wrap_t == TextureConfig::ClampToBorder) {
+        if (border_color != config.border_color.raw) {
+            auto gl_color = PicaToGL::ColorRGBA8(border_color);
+            glSamplerParameterfv(s, GL_TEXTURE_BORDER_COLOR, gl_color.data());
+        }
+    }
+}
+
 void RasterizerOpenGL::ReconfigureColorTexture(TextureInfo& texture, Pica::Regs::ColorFormat format, u32 width, u32 height) {
     GLint internal_format;
 
@@ -493,7 +538,6 @@ void RasterizerOpenGL::ReconfigureColorTexture(TextureInfo& texture, Pica::Regs:
         break;
     }
 
-    state.texture_units[0].enabled_2d = true;
     state.texture_units[0].texture_2d = texture.texture.handle;
     state.Apply();
 
@@ -537,7 +581,6 @@ void RasterizerOpenGL::ReconfigureDepthTexture(DepthTextureInfo& texture, Pica::
         break;
     }
 
-    state.texture_units[0].enabled_2d = true;
     state.texture_units[0].texture_2d = texture.texture.handle;
     state.Apply();
 
@@ -660,7 +703,7 @@ void RasterizerOpenGL::SyncBlendFuncs() {
 }
 
 void RasterizerOpenGL::SyncBlendColor() {
-    auto blend_color = PicaToGL::ColorRGBA8((u8*)&Pica::g_state.regs.output_merger.blend_const.r);
+    auto blend_color = PicaToGL::ColorRGBA8(Pica::g_state.regs.output_merger.blend_const.raw);
     state.blend.color.red = blend_color[0];
     state.blend.color.green = blend_color[1];
     state.blend.color.blue = blend_color[2];
@@ -679,7 +722,15 @@ void RasterizerOpenGL::SyncLogicOp() {
 }
 
 void RasterizerOpenGL::SyncStencilTest() {
-    // TODO: Implement stencil test, mask, and op
+    const auto& regs = Pica::g_state.regs;
+    state.stencil.test_enabled = regs.output_merger.stencil_test.enable && regs.framebuffer.depth_format == Pica::Regs::DepthFormat::D24S8;
+    state.stencil.test_func = PicaToGL::CompareFunc(regs.output_merger.stencil_test.func);
+    state.stencil.test_ref = regs.output_merger.stencil_test.reference_value;
+    state.stencil.test_mask = regs.output_merger.stencil_test.input_mask;
+    state.stencil.write_mask = regs.output_merger.stencil_test.write_mask;
+    state.stencil.action_stencil_fail = PicaToGL::StencilOp(regs.output_merger.stencil_test.action_stencil_fail);
+    state.stencil.action_depth_fail = PicaToGL::StencilOp(regs.output_merger.stencil_test.action_depth_fail);
+    state.stencil.action_depth_pass = PicaToGL::StencilOp(regs.output_merger.stencil_test.action_depth_pass);
 }
 
 void RasterizerOpenGL::SyncDepthTest() {
@@ -722,7 +773,7 @@ void RasterizerOpenGL::SyncTevOps(unsigned stage_index, const Pica::Regs::TevSta
 }
 
 void RasterizerOpenGL::SyncTevColor(unsigned stage_index, const Pica::Regs::TevStageConfig& config) {
-    auto const_color = PicaToGL::ColorRGBA8((u8*)&config.const_r);
+    auto const_color = PicaToGL::ColorRGBA8(config.const_color);
     glUniform4fv(uniform_tev_cfgs[stage_index].const_color, 1, const_color.data());
 }
 
@@ -731,7 +782,7 @@ void RasterizerOpenGL::SyncTevMultipliers(unsigned stage_index, const Pica::Regs
 }
 
 void RasterizerOpenGL::SyncCombinerColor() {
-    auto combiner_color = PicaToGL::ColorRGBA8((u8*)&Pica::g_state.regs.tev_combiner_buffer_color.r);
+    auto combiner_color = PicaToGL::ColorRGBA8(Pica::g_state.regs.tev_combiner_buffer_color.raw);
     glUniform4fv(uniform_tev_combiner_buffer_color, 1, combiner_color.data());
 }
 
@@ -766,10 +817,10 @@ void RasterizerOpenGL::SyncDrawState() {
         const auto& texture = pica_textures[texture_index];
 
         if (texture.enabled) {
-            state.texture_units[texture_index].enabled_2d = true;
+            texture_samplers[texture_index].SyncWithConfig(texture.config);
             res_cache.LoadAndBindTexture(state, texture_index, texture);
         } else {
-            state.texture_units[texture_index].enabled_2d = false;
+            state.texture_units[texture_index].texture_2d = 0;
         }
     }
 
@@ -782,11 +833,15 @@ void RasterizerOpenGL::SyncDrawState() {
     state.Apply();
 }
 
+MICROPROFILE_DEFINE(OpenGL_FramebufferReload, "OpenGL", "FB Reload", MP_RGB(70, 70, 200));
+
 void RasterizerOpenGL::ReloadColorBuffer() {
     u8* color_buffer = Memory::GetPhysicalPointer(Pica::g_state.regs.framebuffer.GetColorBufferPhysicalAddress());
 
     if (color_buffer == nullptr)
         return;
+
+    MICROPROFILE_SCOPE(OpenGL_FramebufferReload);
 
     u32 bytes_per_pixel = Pica::Regs::BytesPerColorPixel(fb_color_texture.format);
 
@@ -804,7 +859,6 @@ void RasterizerOpenGL::ReloadColorBuffer() {
         }
     }
 
-    state.texture_units[0].enabled_2d = true;
     state.texture_units[0].texture_2d = fb_color_texture.texture.handle;
     state.Apply();
 
@@ -827,6 +881,8 @@ void RasterizerOpenGL::ReloadDepthBuffer() {
 
     if (depth_buffer == nullptr)
         return;
+
+    MICROPROFILE_SCOPE(OpenGL_FramebufferReload);
 
     u32 bytes_per_pixel = Pica::Regs::BytesPerDepthPixel(fb_depth_texture.format);
 
@@ -862,19 +918,26 @@ void RasterizerOpenGL::ReloadDepthBuffer() {
         }
     }
 
-    state.texture_units[0].enabled_2d = true;
     state.texture_units[0].texture_2d = fb_depth_texture.texture.handle;
     state.Apply();
 
     glActiveTexture(GL_TEXTURE0);
-    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, fb_depth_texture.width, fb_depth_texture.height,
-                    fb_depth_texture.gl_format, fb_depth_texture.gl_type, temp_fb_depth_buffer.get());
+    if (fb_depth_texture.format == Pica::Regs::DepthFormat::D24S8) {
+        // TODO(Subv): There is a bug with Intel Windows drivers that makes glTexSubImage2D not change the stencil buffer.
+        // The bug has been reported to Intel (https://communities.intel.com/message/324464)
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH24_STENCIL8, fb_depth_texture.width, fb_depth_texture.height, 0,
+            GL_DEPTH_STENCIL, GL_UNSIGNED_INT_24_8, temp_fb_depth_buffer.get());
+    } else {
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, fb_depth_texture.width, fb_depth_texture.height,
+            fb_depth_texture.gl_format, fb_depth_texture.gl_type, temp_fb_depth_buffer.get());
+    }
 
     state.texture_units[0].texture_2d = 0;
     state.Apply();
 }
 
 Common::Profiling::TimingCategory buffer_commit_category("Framebuffer Commit");
+MICROPROFILE_DEFINE(OpenGL_FramebufferCommit, "OpenGL", "FB Commit", MP_RGB(70, 70, 200));
 
 void RasterizerOpenGL::CommitColorBuffer() {
     if (last_fb_color_addr != 0) {
@@ -882,12 +945,12 @@ void RasterizerOpenGL::CommitColorBuffer() {
 
         if (color_buffer != nullptr) {
             Common::Profiling::ScopeTimer timer(buffer_commit_category);
+            MICROPROFILE_SCOPE(OpenGL_FramebufferCommit);
 
             u32 bytes_per_pixel = Pica::Regs::BytesPerColorPixel(fb_color_texture.format);
 
             std::unique_ptr<u8[]> temp_gl_color_buffer(new u8[fb_color_texture.width * fb_color_texture.height * bytes_per_pixel]);
 
-            state.texture_units[0].enabled_2d = true;
             state.texture_units[0].texture_2d = fb_color_texture.texture.handle;
             state.Apply();
 
@@ -919,6 +982,7 @@ void RasterizerOpenGL::CommitDepthBuffer() {
 
         if (depth_buffer != nullptr) {
             Common::Profiling::ScopeTimer timer(buffer_commit_category);
+            MICROPROFILE_SCOPE(OpenGL_FramebufferCommit);
 
             u32 bytes_per_pixel = Pica::Regs::BytesPerDepthPixel(fb_depth_texture.format);
 
@@ -927,7 +991,6 @@ void RasterizerOpenGL::CommitDepthBuffer() {
 
             std::unique_ptr<u8[]> temp_gl_depth_buffer(new u8[fb_depth_texture.width * fb_depth_texture.height * gl_bpp]);
 
-            state.texture_units[0].enabled_2d = true;
             state.texture_units[0].texture_2d = fb_depth_texture.texture.handle;
             state.Apply();
 

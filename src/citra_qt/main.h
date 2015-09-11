@@ -14,6 +14,7 @@ class GImageInfo;
 class GRenderWindow;
 class EmuThread;
 class ProfilerWidget;
+class MicroProfileDialog;
 class DisassemblerWidget;
 class RegistersWidget;
 class CallstackWidget;
@@ -23,6 +24,8 @@ class GPUCommandListWidget;
 class GMainWindow : public QMainWindow
 {
     Q_OBJECT
+
+    static const int max_recent_files_item = 10; ///< Max number of recently loaded items to keep track
 
     // TODO: Make use of this!
     enum {
@@ -58,6 +61,26 @@ private:
     void BootGame(const std::string& filename);
     void ShutdownGame();
 
+    /**
+     * Stores the filename in the recently loaded files list.
+     * The new filename is stored at the beginning of the recently loaded files list.
+     * After inserting the new entry, duplicates are removed meaning that if
+     * this was inserted from \a OnMenuRecentFile(), the entry will be put on top
+     * and remove from its previous position.
+     *
+     * Finally, this function calls \a UpdateRecentFiles() to update the UI.
+     *
+     * @param filename the filename to store
+     */
+    void StoreRecentFile(const QString& filename);
+
+    /**
+     * Updates the recent files menu.
+     * Menu entries are rebuilt from the configuration file.
+     * If there is no entry in the menu, the menu is greyed out.
+     */
+    void UpdateRecentFiles();
+
     void closeEvent(QCloseEvent* event) override;
 
 private slots:
@@ -66,10 +89,12 @@ private slots:
     void OnStopGame();
     void OnMenuLoadFile();
     void OnMenuLoadSymbolMap();
+    void OnMenuRecentFile();
     void OnOpenHotkeysDialog();
     void OnConfigure();
     void OnDisplayTitleBars(bool);
     void SetHardwareRendererEnabled(bool);
+    void SetShaderJITEnabled(bool);
     void ToggleWindowMode();
 
 private:
@@ -80,11 +105,14 @@ private:
     std::unique_ptr<EmuThread> emu_thread;
 
     ProfilerWidget* profilerWidget;
+    MicroProfileDialog* microProfileDialog;
     DisassemblerWidget* disasmWidget;
     RegistersWidget* registersWidget;
     CallstackWidget* callstackWidget;
     GPUCommandStreamWidget* graphicsWidget;
     GPUCommandListWidget* graphicsCommandsWidget;
+
+    QAction* actions_recent_files[max_recent_files_item];
 };
 
 #endif // _CITRA_QT_MAIN_HXX_

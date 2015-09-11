@@ -26,6 +26,9 @@ OpenGLState::OpenGLState() {
     stencil.test_ref = 0;
     stencil.test_mask = -1;
     stencil.write_mask = -1;
+    stencil.action_depth_fail = GL_KEEP;
+    stencil.action_depth_pass = GL_KEEP;
+    stencil.action_stencil_fail = GL_KEEP;
 
     blend.enabled = false;
     blend.src_rgb_func = GL_ONE;
@@ -40,8 +43,8 @@ OpenGLState::OpenGLState() {
     logic_op = GL_COPY;
 
     for (auto& texture_unit : texture_units) {
-        texture_unit.enabled_2d = false;
         texture_unit.texture_2d = 0;
+        texture_unit.sampler = 0;
     }
 
     draw.framebuffer = 0;
@@ -106,6 +109,12 @@ void OpenGLState::Apply() {
         glStencilFunc(stencil.test_func, stencil.test_ref, stencil.test_mask);
     }
 
+    if (stencil.action_depth_fail != cur_state.stencil.action_depth_fail ||
+            stencil.action_depth_pass != cur_state.stencil.action_depth_pass ||
+            stencil.action_stencil_fail != cur_state.stencil.action_stencil_fail) {
+        glStencilOp(stencil.action_stencil_fail, stencil.action_depth_fail, stencil.action_depth_pass);
+    }
+
     // Stencil mask
     if (stencil.write_mask != cur_state.stencil.write_mask) {
         glStencilMask(stencil.write_mask);
@@ -146,17 +155,13 @@ void OpenGLState::Apply() {
     }
 
     // Textures
-    for (unsigned texture_index = 0; texture_index < ARRAY_SIZE(texture_units); ++texture_index) {
-        if (texture_units[texture_index].enabled_2d != cur_state.texture_units[texture_index].enabled_2d ||
-            texture_units[texture_index].texture_2d != cur_state.texture_units[texture_index].texture_2d) {
-
-            glActiveTexture(GL_TEXTURE0 + texture_index);
-
-            if (texture_units[texture_index].enabled_2d) {
-                glBindTexture(GL_TEXTURE_2D, texture_units[texture_index].texture_2d);
-            } else {
-                glBindTexture(GL_TEXTURE_2D, 0);
-            }
+    for (unsigned i = 0; i < ARRAY_SIZE(texture_units); ++i) {
+        if (texture_units[i].texture_2d != cur_state.texture_units[i].texture_2d) {
+            glActiveTexture(GL_TEXTURE0 + i);
+            glBindTexture(GL_TEXTURE_2D, texture_units[i].texture_2d);
+        }
+        if (texture_units[i].sampler != cur_state.texture_units[i].sampler) {
+            glBindSampler(i, texture_units[i].sampler);
         }
     }
 
@@ -181,4 +186,44 @@ void OpenGLState::Apply() {
     }
 
     cur_state = *this;
+}
+
+void OpenGLState::ResetTexture(GLuint id) {
+    for (auto& unit : cur_state.texture_units) {
+        if (unit.texture_2d == id) {
+            unit.texture_2d = 0;
+        }
+    }
+}
+
+void OpenGLState::ResetSampler(GLuint id) {
+    for (auto& unit : cur_state.texture_units) {
+        if (unit.sampler == id) {
+            unit.sampler = 0;
+        }
+    }
+}
+
+void OpenGLState::ResetProgram(GLuint id) {
+    if (cur_state.draw.shader_program == id) {
+        cur_state.draw.shader_program = 0;
+    }
+}
+
+void OpenGLState::ResetBuffer(GLuint id) {
+    if (cur_state.draw.vertex_buffer == id) {
+        cur_state.draw.vertex_buffer = 0;
+    }
+}
+
+void OpenGLState::ResetVertexArray(GLuint id) {
+    if (cur_state.draw.vertex_array == id) {
+        cur_state.draw.vertex_array = 0;
+    }
+}
+
+void OpenGLState::ResetFramebuffer(GLuint id) {
+    if (cur_state.draw.framebuffer == id) {
+        cur_state.draw.framebuffer = 0;
+    }
 }

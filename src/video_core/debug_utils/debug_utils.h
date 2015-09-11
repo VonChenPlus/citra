@@ -158,7 +158,6 @@ extern std::shared_ptr<DebugContext> g_debug_context; // TODO: Get rid of this g
 namespace DebugUtils {
 
 #define PICA_DUMP_GEOMETRY 0
-#define PICA_DUMP_SHADERS 0
 #define PICA_DUMP_TEXTURES 0
 #define PICA_LOG_TEV 0
 
@@ -182,27 +181,23 @@ private:
     std::vector<Face> faces;
 };
 
-void DumpShader(const u32* binary_data, u32 binary_size, const u32* swizzle_data, u32 swizzle_size,
-                u32 main_offset, const Regs::VSOutputAttributes* output_attributes);
+void DumpShader(const std::string& filename, const Regs::ShaderConfig& config,
+                const State::ShaderSetup& setup, const Regs::VSOutputAttributes* output_attributes);
 
 
 // Utility class to log Pica commands.
 struct PicaTrace {
-    struct Write : public std::pair<u32,u32> {
-        Write(u32 id, u32 value) : std::pair<u32,u32>(id, value) {}
-
-        u32& Id() { return first; }
-        const u32& Id() const { return first; }
-
-        u32& Value() { return second; }
-        const u32& Value() const { return second; }
+    struct Write {
+        u16 cmd_id;
+        u16 mask;
+        u32 value;
     };
     std::vector<Write> writes;
 };
 
 void StartPicaTracing();
 bool IsPicaTracing();
-void OnPicaRegWrite(u32 id, u32 value);
+void OnPicaRegWrite(PicaTrace::Write write);
 std::unique_ptr<PicaTrace> FinishPicaTracing();
 
 struct TextureInfo {

@@ -18,6 +18,7 @@ set(SRCS
             debugger/ramview.cpp
             debugger/registers.cpp
             util/spinbox.cpp
+            util/util.cpp
             bootmanager.cpp
             hotkeys.cpp
             main.cpp
@@ -42,6 +43,7 @@ set(HEADERS
             debugger/ramview.h
             debugger/registers.h
             util/spinbox.h
+            util/util.h
             bootmanager.h
             hotkeys.h
             main.h
@@ -71,7 +73,7 @@ if (APPLE)
 else()
     add_executable(citra-qt ${SRCS} ${HEADERS} ${UI_HDRS})
 endif()
-target_link_libraries(citra-qt core common video_core qhexedit)
+target_link_libraries(citra-qt core video_core common qhexedit)
 target_link_libraries(citra-qt ${OPENGL_gl_LIBRARY} ${CITRA_QT_LIBS})
 target_link_libraries(citra-qt ${PLATFORM_LIBRARIES})
 

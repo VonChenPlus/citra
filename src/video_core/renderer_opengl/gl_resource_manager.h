@@ -6,10 +6,12 @@
 
 #include <utility>
 
+#include <glad/glad.h>
+
 #include "common/common_types.h"
 
-#include "video_core/renderer_opengl/generated/gl_3_2_core.h"
 #include "video_core/renderer_opengl/gl_shader_util.h"
+#include "video_core/renderer_opengl/gl_state.h"
 
 class OGLTexture : private NonCopyable {
 public:
@@ -28,6 +30,31 @@ public:
     void Release() {
         if (handle == 0) return;
         glDeleteTextures(1, &handle);
+        OpenGLState::ResetTexture(handle);
+        handle = 0;
+    }
+
+    GLuint handle = 0;
+};
+
+class OGLSampler : private NonCopyable {
+public:
+    OGLSampler() = default;
+    OGLSampler(OGLSampler&& o) { std::swap(handle, o.handle); }
+    ~OGLSampler() { Release(); }
+    OGLSampler& operator=(OGLSampler&& o) { std::swap(handle, o.handle); return *this; }
+
+    /// Creates a new internal OpenGL resource and stores the handle
+    void Create() {
+        if (handle != 0) return;
+        glGenSamplers(1, &handle);
+    }
+
+    /// Deletes the internal OpenGL resource
+    void Release() {
+        if (handle == 0) return;
+        glDeleteSamplers(1, &handle);
+        OpenGLState::ResetSampler(handle);
         handle = 0;
     }
 
@@ -51,6 +78,7 @@ public:
     void Release() {
         if (handle == 0) return;
         glDeleteProgram(handle);
+        OpenGLState::ResetProgram(handle);
         handle = 0;
     }
 
@@ -74,6 +102,7 @@ public:
     void Release() {
         if (handle == 0) return;
         glDeleteBuffers(1, &handle);
+        OpenGLState::ResetBuffer(handle);
         handle = 0;
     }
 
@@ -97,6 +126,7 @@ public:
     void Release() {
         if (handle == 0) return;
         glDeleteVertexArrays(1, &handle);
+        OpenGLState::ResetVertexArray(handle);
         handle = 0;
     }
 
@@ -120,6 +150,7 @@ public:
     void Release() {
         if (handle == 0) return;
         glDeleteFramebuffers(1, &handle);
+        OpenGLState::ResetFramebuffer(handle);
         handle = 0;
     }
 

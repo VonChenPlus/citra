@@ -4,11 +4,11 @@
 
 #pragma once
 
+#include <glad/glad.h>
+
 #include "common/common_types.h"
 
 #include "video_core/pica.h"
-
-#include "generated/gl_3_2_core.h"
 
 namespace PicaToGL {
 
@@ -152,11 +152,34 @@ inline GLenum CompareFunc(Pica::Regs::CompareFunc func) {
     return compare_func_table[(unsigned)func];
 }
 
-inline std::array<GLfloat, 4> ColorRGBA8(const u8* bytes) {
-    return { { bytes[0] / 255.0f,
-               bytes[1] / 255.0f,
-               bytes[2] / 255.0f,
-               bytes[3] / 255.0f
+inline GLenum StencilOp(Pica::Regs::StencilAction action) {
+    static const GLenum stencil_op_table[] = {
+        GL_KEEP,        // StencilAction::Keep
+        GL_ZERO,        // StencilAction::Zero
+        GL_REPLACE,     // StencilAction::Replace
+        GL_INCR,        // StencilAction::Increment
+        GL_DECR,        // StencilAction::Decrement
+        GL_INVERT,      // StencilAction::Invert
+        GL_INCR_WRAP,   // StencilAction::IncrementWrap
+        GL_DECR_WRAP    // StencilAction::DecrementWrap
+    };
+
+    // Range check table for input
+    if ((unsigned)action >= ARRAY_SIZE(stencil_op_table)) {
+        LOG_CRITICAL(Render_OpenGL, "Unknown stencil op %d", action);
+        UNREACHABLE();
+
+        return GL_KEEP;
+    }
+
+    return stencil_op_table[(unsigned)action];
+}
+
+inline std::array<GLfloat, 4> ColorRGBA8(const u32 color) {
+    return { { (color >>  0 & 0xFF) / 255.0f,
+               (color >>  8 & 0xFF) / 255.0f,
+               (color >> 16 & 0xFF) / 255.0f,
+               (color >> 24 & 0xFF) / 255.0f
            } };
 }
 

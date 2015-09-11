@@ -9,7 +9,7 @@
 #include "common/common_types.h"
 
 #include "video_core/hwrasterizer_base.h"
-#include "video_core/vertex_shader.h"
+#include "video_core/shader/shader_interpreter.h"
 
 #include "gl_state.h"
 #include "gl_rasterizer_cache.h"
@@ -27,9 +27,9 @@ public:
     void Reset() override;
 
     /// Queues the primitive formed by the given vertices for rendering
-    void AddTriangle(const Pica::VertexShader::OutputVertex& v0,
-                     const Pica::VertexShader::OutputVertex& v1,
-                     const Pica::VertexShader::OutputVertex& v2) override;
+    void AddTriangle(const Pica::Shader::OutputVertex& v0,
+                     const Pica::Shader::OutputVertex& v1,
+                     const Pica::Shader::OutputVertex& v2) override;
 
     /// Draw the current batch of triangles
     void DrawTriangles() override;
@@ -80,9 +80,27 @@ private:
         GLenum gl_type;
     };
 
+    struct SamplerInfo {
+        using TextureConfig = Pica::Regs::TextureConfig;
+
+        OGLSampler sampler;
+
+        /// Creates the sampler object, initializing its state so that it's in sync with the SamplerInfo struct.
+        void Create();
+        /// Syncs the sampler object with the config, updating any necessary state.
+        void SyncWithConfig(const TextureConfig& config);
+
+    private:
+        TextureConfig::TextureFilter mag_filter;
+        TextureConfig::TextureFilter min_filter;
+        TextureConfig::WrapMode wrap_s;
+        TextureConfig::WrapMode wrap_t;
+        u32 border_color;
+    };
+
     /// Structure that the hardware rendered vertices are composed of
     struct HardwareVertex {
-        HardwareVertex(const Pica::VertexShader::OutputVertex& v) {
+        HardwareVertex(const Pica::Shader::OutputVertex& v) {
             position[0] = v.pos.x.ToFloat32();
             position[1] = v.pos.y.ToFloat32();
             position[2] = v.pos.z.ToFloat32();
@@ -193,6 +211,7 @@ private:
     PAddr last_fb_depth_addr;
 
     // Hardware rasterizer
+    std::array<SamplerInfo, 3> texture_samplers;
     TextureInfo fb_color_texture;
     DepthTextureInfo fb_depth_texture;
     OGLShader shader;
