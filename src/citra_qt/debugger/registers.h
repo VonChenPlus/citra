@@ -5,9 +5,9 @@
 #include "ui_registers.h"
 
 #include <QDockWidget>
-#include <QTreeWidgetItem>
 
 class QTreeWidget;
+class QTreeWidgetItem;
 class EmuThread;
 
 class RegistersWidget : public QDockWidget
@@ -15,7 +15,7 @@ class RegistersWidget : public QDockWidget
     Q_OBJECT
 
 public:
-    RegistersWidget(QWidget* parent = NULL);
+    RegistersWidget(QWidget* parent = nullptr);
 
 public slots:
     void OnDebugModeEntered();
