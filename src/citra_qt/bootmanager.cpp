@@ -19,8 +19,8 @@
 #include "core/settings.h"
 #include "core/system.h"
 
-#include "video_core/video_core.h"
 #include "video_core/debug_utils/debug_utils.h"
+#include "video_core/video_core.h"
 
 #define APP_NAME        "citra"
 #define APP_VERSION     "0.1-" VERSION
@@ -86,6 +86,9 @@ public:
     }
 
     void paintEvent(QPaintEvent* ev) override {
+        if (do_painting) {
+            QPainter painter(this);
+        }
     }
 
     void resizeEvent(QResizeEvent* ev) override {
@@ -93,8 +96,12 @@ public:
         parent->OnFramebufferSizeChanged();
     }
 
+    void DisablePainting() { do_painting = false; }
+    void EnablePainting() { do_painting = true; }
+
 private:
     GRenderWindow* parent;
+    bool do_painting;
 };
 
 GRenderWindow::GRenderWindow(QWidget* parent, EmuThread* emu_thread) :
@@ -128,9 +135,6 @@ GRenderWindow::GRenderWindow(QWidget* parent, EmuThread* emu_thread) :
 
     BackupGeometry();
 
-#if QT_VERSION >= QT_VERSION_CHECK(5, 0, 0)
-    connect(this->windowHandle(), SIGNAL(screenChanged(QScreen*)), this, SLOT(OnFramebufferSizeChanged()));
-#endif
 }
 
 void GRenderWindow::moveContext()
@@ -177,16 +181,9 @@ void GRenderWindow::PollEvents() {
 void GRenderWindow::OnFramebufferSizeChanged()
 {
     // Screen changes potentially incur a change in screen DPI, hence we should update the framebuffer size
-#if QT_VERSION >= QT_VERSION_CHECK(5, 0, 0)
-    // windowHandle() might not be accessible until the window is displayed to screen.
-    auto pixel_ratio = windowHandle() ? (windowHandle()->screen()->devicePixelRatio()) : 1.0;
-
-    unsigned width = child->QPaintDevice::width() * pixel_ratio;
-    unsigned height = child->QPaintDevice::height() * pixel_ratio;
-#else
-    unsigned width = child->QPaintDevice::width();
-    unsigned height = child->QPaintDevice::height();
-#endif
+    qreal pixelRatio = windowPixelRatio();
+    unsigned width = child->QPaintDevice::width() * pixelRatio;
+    unsigned height = child->QPaintDevice::height() * pixelRatio;
 
     NotifyFramebufferLayoutChanged(EmuWindow::FramebufferLayout::DefaultScreenLayout(width, height));
 }
@@ -219,6 +216,16 @@ QByteArray GRenderWindow::saveGeometry()
         return geometry;
 }
 
+qreal GRenderWindow::windowPixelRatio()
+{
+#if QT_VERSION >= QT_VERSION_CHECK(5, 0, 0)
+    // windowHandle() might not be accessible until the window is displayed to screen.
+    return windowHandle() ? windowHandle()->screen()->devicePixelRatio() : 1.0f;
+#else
+    return 1.0f;
+#endif
+}
+
 void GRenderWindow::closeEvent(QCloseEvent* event) {
     emit Closed();
     QWidget::closeEvent(event);
@@ -239,14 +246,18 @@ void GRenderWindow::mousePressEvent(QMouseEvent *event)
     if (event->button() == Qt::LeftButton)
     {
         auto pos = event->pos();
-        this->TouchPressed(static_cast<unsigned>(pos.x()), static_cast<unsigned>(pos.y()));
+        qreal pixelRatio = windowPixelRatio();
+        this->TouchPressed(static_cast<unsigned>(pos.x() * pixelRatio),
+                           static_cast<unsigned>(pos.y() * pixelRatio));
     }
 }
 
 void GRenderWindow::mouseMoveEvent(QMouseEvent *event)
 {
     auto pos = event->pos();
-    this->TouchMoved(static_cast<unsigned>(std::max(pos.x(), 0)), static_cast<unsigned>(std::max(pos.y(), 0)));
+    qreal pixelRatio = windowPixelRatio();
+    this->TouchMoved(std::max(static_cast<unsigned>(pos.x() * pixelRatio), 0u),
+                     std::max(static_cast<unsigned>(pos.y() * pixelRatio), 0u));
 }
 
 void GRenderWindow::mouseReleaseEvent(QMouseEvent *event)
@@ -273,8 +284,19 @@ void GRenderWindow::OnMinimalClientAreaChangeRequest(const std::pair<unsigned,un
 
 void GRenderWindow::OnEmulationStarting(EmuThread* emu_thread) {
     this->emu_thread = emu_thread;
+    child->DisablePainting();
 }
 
 void GRenderWindow::OnEmulationStopping() {
     emu_thread = nullptr;
+    child->EnablePainting();
+}
+
+void GRenderWindow::showEvent(QShowEvent * event) {
+    QWidget::showEvent(event);
+
+    // windowHandle() is not initialized until the Window is shown, so we connect it here.
+    #if QT_VERSION >= QT_VERSION_CHECK(5, 0, 0)
+        connect(this->windowHandle(), SIGNAL(screenChanged(QScreen*)), this, SLOT(OnFramebufferSizeChanged()), Qt::UniqueConnection);
+    #endif
 }

@@ -12,6 +12,7 @@
 
 #include "citra_qt/bootmanager.h"
 #include "citra_qt/config.h"
+#include "citra_qt/game_list.h"
 #include "citra_qt/hotkeys.h"
 #include "citra_qt/main.h"
 
@@ -43,6 +44,7 @@
 #include "core/settings.h"
 #include "core/system.h"
 #include "core/arm/disassembler/load_symbol_map.h"
+#include "core/gdbstub/gdbstub.h"
 #include "core/loader/loader.h"
 
 #include "video_core/video_core.h"
@@ -58,6 +60,9 @@ GMainWindow::GMainWindow() : emu_thread(nullptr)
 
     render_window = new GRenderWindow(this, emu_thread.get());
     render_window->hide();
+
+    game_list = new GameList();
+    ui.horizontalLayout->addWidget(game_list);
 
     profilerWidget = new ProfilerWidget(this);
     addDockWidget(Qt::BottomDockWidgetArea, profilerWidget);
@@ -137,6 +142,13 @@ GMainWindow::GMainWindow() : emu_thread(nullptr)
     microProfileDialog->setVisible(settings.value("microProfileDialogVisible").toBool());
     settings.endGroup();
 
+    game_list->LoadInterfaceLayout(settings);
+
+    ui.action_Use_Gdbstub->setChecked(Settings::values.use_gdbstub);
+    SetGdbstubEnabled(ui.action_Use_Gdbstub->isChecked());
+
+    GDBStub::SetServerPort(static_cast<u32>(Settings::values.gdbstub_port));
+
     ui.action_Use_Hardware_Renderer->setChecked(Settings::values.use_hw_renderer);
     SetHardwareRendererEnabled(ui.action_Use_Hardware_Renderer->isChecked());
 
@@ -160,13 +172,16 @@ GMainWindow::GMainWindow() : emu_thread(nullptr)
     UpdateRecentFiles();
 
     // Setup connections
+    connect(game_list, SIGNAL(GameChosen(QString)), this, SLOT(OnGameListLoadFile(QString)));
     connect(ui.action_Load_File, SIGNAL(triggered()), this, SLOT(OnMenuLoadFile()));
     connect(ui.action_Load_Symbol_Map, SIGNAL(triggered()), this, SLOT(OnMenuLoadSymbolMap()));
+    connect(ui.action_Select_Game_List_Root, SIGNAL(triggered()), this, SLOT(OnMenuSelectGameListRoot()));
     connect(ui.action_Start, SIGNAL(triggered()), this, SLOT(OnStartGame()));
     connect(ui.action_Pause, SIGNAL(triggered()), this, SLOT(OnPauseGame()));
     connect(ui.action_Stop, SIGNAL(triggered()), this, SLOT(OnStopGame()));
     connect(ui.action_Use_Hardware_Renderer, SIGNAL(triggered(bool)), this, SLOT(SetHardwareRendererEnabled(bool)));
     connect(ui.action_Use_Shader_JIT, SIGNAL(triggered(bool)), this, SLOT(SetShaderJITEnabled(bool)));
+    connect(ui.action_Use_Gdbstub, SIGNAL(triggered(bool)), this, SLOT(SetGdbstubEnabled(bool)));
     connect(ui.action_Single_Window_Mode, SIGNAL(triggered(bool)), this, SLOT(ToggleWindowMode()));
     connect(ui.action_Hotkeys, SIGNAL(triggered()), this, SLOT(OnOpenHotkeysDialog()));
 
@@ -192,6 +207,8 @@ GMainWindow::GMainWindow() : emu_thread(nullptr)
     setWindowTitle(window_title.c_str());
 
     show();
+
+    game_list->PopulateAsync(settings.value("gameListRootDir").toString(), settings.value("gameListDeepScan").toBool());
 
     QStringList args = QApplication::arguments();
     if (args.length() >= 2) {
@@ -230,7 +247,7 @@ void GMainWindow::OnDisplayTitleBars(bool show)
 }
 
 void GMainWindow::BootGame(const std::string& filename) {
-    LOG_INFO(Frontend, "Citra starting...\n");
+    LOG_INFO(Frontend, "Citra starting...");
 
     // Shutdown previous session if the emu thread is still active...
     if (emu_thread != nullptr)
@@ -264,8 +281,12 @@ void GMainWindow::BootGame(const std::string& filename) {
     // Update the GUI
     registersWidget->OnDebugModeEntered();
     callstackWidget->OnDebugModeEntered();
+    if (ui.action_Single_Window_Mode->isChecked()) {
+        game_list->hide();
+    }
     render_window->show();
 
+    emulation_running = true;
     OnStartGame();
 }
 
@@ -294,6 +315,9 @@ void GMainWindow::ShutdownGame() {
     ui.action_Pause->setEnabled(false);
     ui.action_Stop->setEnabled(false);
     render_window->hide();
+    game_list->show();
+
+    emulation_running = false;
 }
 
 void GMainWindow::StoreRecentFile(const QString& filename)
@@ -337,16 +361,20 @@ void GMainWindow::UpdateRecentFiles() {
     }
 }
 
+void GMainWindow::OnGameListLoadFile(QString game_path) {
+    BootGame(game_path.toLocal8Bit().data());
+}
+
 void GMainWindow::OnMenuLoadFile() {
     QSettings settings;
     QString rom_path = settings.value("romsPath", QString()).toString();
 
     QString filename = QFileDialog::getOpenFileName(this, tr("Load File"), rom_path, tr("3DS executable (*.3ds *.3dsx *.elf *.axf *.cci *.cxi)"));
-    if (filename.size()) {
+    if (!filename.isEmpty()) {
         settings.setValue("romsPath", QFileInfo(filename).path());
         StoreRecentFile(filename);
 
-        BootGame(filename.toLatin1().data());
+        BootGame(filename.toLocal8Bit().data());
     }
 }
 
@@ -355,10 +383,20 @@ void GMainWindow::OnMenuLoadSymbolMap() {
     QString symbol_path = settings.value("symbolsPath", QString()).toString();
 
     QString filename = QFileDialog::getOpenFileName(this, tr("Load Symbol Map"), symbol_path, tr("Symbol map (*)"));
-    if (filename.size()) {
+    if (!filename.isEmpty()) {
         settings.setValue("symbolsPath", QFileInfo(filename).path());
 
-        LoadSymbolMap(filename.toLatin1().data());
+        LoadSymbolMap(filename.toLocal8Bit().data());
+    }
+}
+
+void GMainWindow::OnMenuSelectGameListRoot() {
+    QSettings settings;
+
+    QString dir_path = QFileDialog::getExistingDirectory(this, tr("Select Directory"));
+    if (!dir_path.isEmpty()) {
+        settings.setValue("gameListRootDir", dir_path);
+        game_list->PopulateAsync(dir_path, settings.value("gameListDeepScan").toBool());
     }
 }
 
@@ -369,7 +407,7 @@ void GMainWindow::OnMenuRecentFile() {
     QString filename = action->data().toString();
     QFileInfo file_info(filename);
     if (file_info.exists()) {
-        BootGame(filename.toLatin1().data());
+        BootGame(filename.toLocal8Bit().data());
         StoreRecentFile(filename); // Put the filename on top of the list
     } else {
         // Display an error message and remove the file from the list.
@@ -412,10 +450,22 @@ void GMainWindow::OnOpenHotkeysDialog() {
 
 void GMainWindow::SetHardwareRendererEnabled(bool enabled) {
     VideoCore::g_hw_renderer_enabled = enabled;
+
+    Config config;
+    Settings::values.use_hw_renderer = enabled;
+    config.Save();
+}
+
+void GMainWindow::SetGdbstubEnabled(bool enabled) {
+    GDBStub::ToggleServer(enabled);
 }
 
 void GMainWindow::SetShaderJITEnabled(bool enabled) {
     VideoCore::g_shader_jit_enabled = enabled;
+
+    Config config;
+    Settings::values.use_shader_jit = enabled;
+    config.Save();
 }
 
 void GMainWindow::ToggleWindowMode() {
@@ -423,17 +473,23 @@ void GMainWindow::ToggleWindowMode() {
         // Render in the main window...
         render_window->BackupGeometry();
         ui.horizontalLayout->addWidget(render_window);
-        render_window->setVisible(true);
         render_window->setFocusPolicy(Qt::ClickFocus);
-        render_window->setFocus();
+        if (emulation_running) {
+            render_window->setVisible(true);
+            render_window->setFocus();
+            game_list->hide();
+        }
 
     } else {
         // Render in a separate window...
         ui.horizontalLayout->removeWidget(render_window);
         render_window->setParent(nullptr);
-        render_window->setVisible(true);
-        render_window->RestoreGeometry();
         render_window->setFocusPolicy(Qt::NoFocus);
+        if (emulation_running) {
+            render_window->setVisible(true);
+            render_window->RestoreGeometry();
+            game_list->show();
+        }
     }
 }
 
@@ -456,6 +512,7 @@ void GMainWindow::closeEvent(QCloseEvent* event) {
     settings.setValue("singleWindowMode", ui.action_Single_Window_Mode->isChecked());
     settings.setValue("displayTitleBars", ui.actionDisplay_widget_title_bars->isChecked());
     settings.setValue("firstStart", false);
+    game_list->SaveInterfaceLayout(settings);
     SaveHotkeys(settings);
 
     // Shutdown session if the emu thread is active...

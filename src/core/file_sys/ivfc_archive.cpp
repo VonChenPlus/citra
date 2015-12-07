@@ -59,10 +59,15 @@ std::unique_ptr<DirectoryBackend> IVFCArchive::OpenDirectory(const Path& path) c
     return Common::make_unique<IVFCDirectory>();
 }
 
+u64 IVFCArchive::GetFreeBytes() const {
+    LOG_WARNING(Service_FS, "Attempted to get the free space in an IVFC archive");
+    return 0;
+}
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 size_t IVFCFile::Read(const u64 offset, const size_t length, u8* buffer) const {
-    LOG_TRACE(Service_FS, "called offset=%llu, length=%d", offset, length);
+    LOG_TRACE(Service_FS, "called offset=%llu, length=%zu", offset, length);
     romfs_file->Seek(data_offset + offset, SEEK_SET);
     size_t read_length = (size_t)std::min((u64)length, data_size - offset);
 

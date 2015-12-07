@@ -462,7 +462,7 @@ static void ProcessTriangleInternal(const Shader::OutputVertex& v0,
                         }
 
                         default:
-                            LOG_ERROR(HW_GPU, "Unknown texture coordinate wrapping mode %x\n", (int)mode);
+                            LOG_ERROR(HW_GPU, "Unknown texture coordinate wrapping mode %x", (int)mode);
                             UNIMPLEMENTED();
                             return 0;
                     }
@@ -498,7 +498,8 @@ static void ProcessTriangleInternal(const Shader::OutputVertex& v0,
             // with some basic arithmetic. Alpha combiners can be configured separately but work
             // analogously.
             Math::Vec4<u8> combiner_output;
-            Math::Vec4<u8> combiner_buffer = {
+            Math::Vec4<u8> combiner_buffer = {0, 0, 0, 0};
+            Math::Vec4<u8> next_combiner_buffer = {
                 regs.tev_combiner_buffer_color.r, regs.tev_combiner_buffer_color.g,
                 regs.tev_combiner_buffer_color.b, regs.tev_combiner_buffer_color.a
             };
@@ -541,7 +542,7 @@ static void ProcessTriangleInternal(const Shader::OutputVertex& v0,
                         return combiner_output;
 
                     default:
-                        LOG_ERROR(HW_GPU, "Unknown color combiner source %d\n", (int)source);
+                        LOG_ERROR(HW_GPU, "Unknown color combiner source %d", (int)source);
                         UNIMPLEMENTED();
                         return {0, 0, 0, 0};
                     }
@@ -679,7 +680,7 @@ static void ProcessTriangleInternal(const Shader::OutputVertex& v0,
                         return { (u8)result, (u8)result, (u8)result };
                     }
                     default:
-                        LOG_ERROR(HW_GPU, "Unknown color combiner operation %d\n", (int)op);
+                        LOG_ERROR(HW_GPU, "Unknown color combiner operation %d", (int)op);
                         UNIMPLEMENTED();
                         return {0, 0, 0};
                     }
@@ -716,7 +717,7 @@ static void ProcessTriangleInternal(const Shader::OutputVertex& v0,
                         return (std::min(255, (input[0] + input[1])) * input[2]) / 255;
 
                     default:
-                        LOG_ERROR(HW_GPU, "Unknown alpha combiner operation %d\n", (int)op);
+                        LOG_ERROR(HW_GPU, "Unknown alpha combiner operation %d", (int)op);
                         UNIMPLEMENTED();
                         return 0;
                     }
@@ -735,11 +736,11 @@ static void ProcessTriangleInternal(const Shader::OutputVertex& v0,
                 auto color_output = ColorCombine(tev_stage.color_op, color_result);
 
                 // alpha combiner
-                std::array<u8,3> alpha_result = {
+                std::array<u8,3> alpha_result = {{
                     GetAlphaModifier(tev_stage.alpha_modifier1, GetSource(tev_stage.alpha_source1)),
                     GetAlphaModifier(tev_stage.alpha_modifier2, GetSource(tev_stage.alpha_source2)),
                     GetAlphaModifier(tev_stage.alpha_modifier3, GetSource(tev_stage.alpha_source3))
-                };
+                }};
                 auto alpha_output = AlphaCombine(tev_stage.alpha_op, alpha_result);
 
                 combiner_output[0] = std::min((unsigned)255, color_output.r() * tev_stage.GetColorMultiplier());
@@ -747,14 +748,16 @@ static void ProcessTriangleInternal(const Shader::OutputVertex& v0,
                 combiner_output[2] = std::min((unsigned)255, color_output.b() * tev_stage.GetColorMultiplier());
                 combiner_output[3] = std::min((unsigned)255, alpha_output * tev_stage.GetAlphaMultiplier());
 
+                combiner_buffer = next_combiner_buffer;
+
                 if (regs.tev_combiner_buffer_input.TevStageUpdatesCombinerBufferColor(tev_stage_index)) {
-                    combiner_buffer.r() = combiner_output.r();
-                    combiner_buffer.g() = combiner_output.g();
-                    combiner_buffer.b() = combiner_output.b();
+                    next_combiner_buffer.r() = combiner_output.r();
+                    next_combiner_buffer.g() = combiner_output.g();
+                    next_combiner_buffer.b() = combiner_output.b();
                 }
 
                 if (regs.tev_combiner_buffer_input.TevStageUpdatesCombinerBufferAlpha(tev_stage_index)) {
-                    combiner_buffer.a() = combiner_output.a();
+                    next_combiner_buffer.a() = combiner_output.a();
                 }
             }
 
@@ -967,6 +970,8 @@ static void ProcessTriangleInternal(const Shader::OutputVertex& v0,
                         UNIMPLEMENTED();
                         break;
                     }
+
+                    return {};
                 };
 
                 auto LookupFactorA = [&](Regs::BlendFactor factor) -> u8 {
@@ -1000,6 +1005,8 @@ static void ProcessTriangleInternal(const Shader::OutputVertex& v0,
                         UNIMPLEMENTED();
                         break;
                     }
+
+                    return {};
                 };
 
                 static auto EvaluateBlendEquation = [](const Math::Vec4<u8>& src, const Math::Vec4<u8>& srcfactor,

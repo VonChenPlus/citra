@@ -92,7 +92,7 @@ void GeometryDumper::AddTriangle(Vertex& v0, Vertex& v1, Vertex& v2) {
     vertices.push_back(v2);
 
     int num_vertices = (int)vertices.size();
-    faces.push_back({ num_vertices-3, num_vertices-2, num_vertices-1 });
+    faces.push_back({{ num_vertices-3, num_vertices-2, num_vertices-1 }});
 }
 
 void GeometryDumper::Dump() {
@@ -576,8 +576,8 @@ const Math::Vec4<u8> LookupTexture(const u8* source, int x, int y, const Texture
                 unsigned table_index = static_cast<int>((x < 2) ? table_index_1.Value() : table_index_2.Value());
 
                 static const std::array<std::array<u8, 2>, 8> etc1_modifier_table = {{
-                    {  2,  8 }, {  5, 17 }, {  9,  29 }, { 13,  42 },
-                    { 18, 60 }, { 24, 80 }, { 33, 106 }, { 47, 183 }
+                    {{  2,  8 }}, {{  5, 17 }}, {{  9,  29 }}, {{ 13,  42 }},
+                    {{ 18, 60 }}, {{ 24, 80 }}, {{ 33, 106 }}, {{ 47, 183 }}
                 }};
 
                 int modifier = etc1_modifier_table.at(table_index).at(GetTableSubIndex(texel));
@@ -641,7 +641,7 @@ void DumpTexture(const Pica::Regs::TextureConfig& texture_config, u8* data) {
     // Initialize write structure
     png_ptr = png_create_write_struct(PNG_LIBPNG_VER_STRING, nullptr, nullptr, nullptr);
     if (png_ptr == nullptr) {
-        LOG_ERROR(Debug_GPU, "Could not allocate write struct\n");
+        LOG_ERROR(Debug_GPU, "Could not allocate write struct");
         goto finalise;
 
     }
@@ -649,13 +649,13 @@ void DumpTexture(const Pica::Regs::TextureConfig& texture_config, u8* data) {
     // Initialize info structure
     info_ptr = png_create_info_struct(png_ptr);
     if (info_ptr == nullptr) {
-        LOG_ERROR(Debug_GPU, "Could not allocate info struct\n");
+        LOG_ERROR(Debug_GPU, "Could not allocate info struct");
         goto finalise;
     }
 
     // Setup Exception handling
     if (setjmp(png_jmpbuf(png_ptr))) {
-        LOG_ERROR(Debug_GPU, "Error during png creation\n");
+        LOG_ERROR(Debug_GPU, "Error during png creation");
         goto finalise;
     }
 

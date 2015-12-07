@@ -6,6 +6,7 @@
 
 #include <string>
 #include <array>
+#include <common/file_util.h>
 
 namespace Settings {
 
@@ -19,22 +20,22 @@ enum Values {
     CUP, CDOWN, CLEFT, CRIGHT,
     NUM_INPUTS
 };
-static const std::array<const char*, NUM_INPUTS> Mapping = {
+static const std::array<const char*, NUM_INPUTS> Mapping = {{
     "pad_a", "pad_b", "pad_x", "pad_y",
     "pad_l", "pad_r", "pad_zl", "pad_zr",
     "pad_start", "pad_select", "pad_home",
     "pad_dup", "pad_ddown", "pad_dleft", "pad_dright",
     "pad_sup", "pad_sdown", "pad_sleft", "pad_sright",
     "pad_cup", "pad_cdown", "pad_cleft", "pad_cright"
-};
-static const std::array<Values, NUM_INPUTS> All = {
+}};
+static const std::array<Values, NUM_INPUTS> All = {{
     A, B, X, Y,
     L, R, ZL, ZR,
     START, SELECT, HOME,
     DUP, DDOWN, DLEFT, DRIGHT,
     SUP, SDOWN, SLEFT, SRIGHT,
     CUP, CDOWN, CLEFT, CRIGHT
-};
+}};
 }
 
 
@@ -60,6 +61,10 @@ struct Values {
     float bg_blue;
 
     std::string log_filter;
+
+    // Debugging
+    bool use_gdbstub;
+    u16 gdbstub_port;
 } extern values;
 
 }

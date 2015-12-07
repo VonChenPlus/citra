@@ -12,11 +12,12 @@
 #include "common/emu_window.h"
 #include "common/thread.h"
 
-class QScreen;
 class QKeyEvent;
+class QScreen;
 
-class GRenderWindow;
+class GGLWidgetInternal;
 class GMainWindow;
+class GRenderWindow;
 
 class EmuThread : public QThread
 {
@@ -110,6 +111,8 @@ public:
     void restoreGeometry(const QByteArray& geometry); // overridden
     QByteArray saveGeometry();  // overridden
 
+    qreal windowPixelRatio();
+
     void closeEvent(QCloseEvent* event) override;
 
     void keyPressEvent(QKeyEvent* event) override;
@@ -123,13 +126,12 @@ public:
 
     void OnClientAreaResized(unsigned width, unsigned height);
 
-    void OnFramebufferSizeChanged();
-
 public slots:
     void moveContext();  // overridden
 
     void OnEmulationStarting(EmuThread* emu_thread);
     void OnEmulationStopping();
+    void OnFramebufferSizeChanged();
 
 signals:
     /// Emitted when the window is closed
@@ -138,7 +140,7 @@ signals:
 private:
     void OnMinimalClientAreaChangeRequest(const std::pair<unsigned,unsigned>& minimal_size) override;
 
-    QGLWidget* child;
+    GGLWidgetInternal* child;
 
     QByteArray geometry;
 
@@ -146,4 +148,7 @@ private:
     int keyboard_id;
 
     EmuThread* emu_thread;
+
+protected:
+    void showEvent(QShowEvent* event) override;
 };

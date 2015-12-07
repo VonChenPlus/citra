@@ -420,147 +420,105 @@ bool CreateEmptyFile(const std::string &filename)
 }
 
 
-// Scans the directory tree gets, starting from _Directory and adds the
-// results into parentEntry. Returns the number of files+directories found
-u32 ScanDirectoryTree(const std::string &directory, FSTEntry& parentEntry)
+bool ForeachDirectoryEntry(unsigned* num_entries_out, const std::string &directory, DirectoryEntryCallable callback)
 {
     LOG_TRACE(Common_Filesystem, "directory %s", directory.c_str());
+
     // How many files + directories we found
-    u32 foundEntries = 0;
+    unsigned found_entries = 0;
+
 #ifdef _WIN32
     // Find the first file in the directory.
     WIN32_FIND_DATA ffd;
 
-    HANDLE hFind = FindFirstFile(Common::UTF8ToTStr(directory + "\\*").c_str(), &ffd);
-    if (hFind == INVALID_HANDLE_VALUE)
-    {
-        FindClose(hFind);
-        return foundEntries;
+    HANDLE handle_find = FindFirstFile(Common::UTF8ToTStr(directory + "\\*").c_str(), &ffd);
+    if (handle_find == INVALID_HANDLE_VALUE) {
+        FindClose(handle_find);
+        return false;
     }
     // windows loop
-    do
-    {
-        FSTEntry entry;
-        const std::string virtualName(Common::TStrToUTF8(ffd.cFileName));
+    do {
+        const std::string virtual_name(Common::TStrToUTF8(ffd.cFileName));
 #else
     struct dirent dirent, *result = nullptr;
 
     DIR *dirp = opendir(directory.c_str());
     if (!dirp)
-        return 0;
+        return false;
 
     // non windows loop
-    while (!readdir_r(dirp, &dirent, &result) && result)
-    {
-        FSTEntry entry;
-        const std::string virtualName(result->d_name);
+    while (!readdir_r(dirp, &dirent, &result) && result) {
+        const std::string virtual_name(result->d_name);
 #endif
-        // check for "." and ".."
-        if (((virtualName[0] == '.') && (virtualName[1] == '\0')) ||
-                ((virtualName[0] == '.') && (virtualName[1] == '.') &&
-                 (virtualName[2] == '\0')))
-            continue;
-        entry.virtualName = virtualName;
-        entry.physicalName = directory;
-        entry.physicalName += DIR_SEP + entry.virtualName;
 
-        if (IsDirectory(entry.physicalName.c_str()))
-        {
+        if (virtual_name == "." || virtual_name == "..")
+            continue;
+
+        unsigned ret_entries;
+        if (!callback(&ret_entries, directory, virtual_name))
+            break;
+        found_entries += ret_entries;
+
+#ifdef _WIN32
+    } while (FindNextFile(handle_find, &ffd) != 0);
+    FindClose(handle_find);
+#else
+    }
+    closedir(dirp);
+#endif
+
+    // num_entries_out is allowed to be specified nullptr, in which case we shouldn't try to set it
+    if (num_entries_out != nullptr)
+        *num_entries_out = found_entries;
+}
+
+unsigned ScanDirectoryTree(const std::string &directory, FSTEntry& parent_entry)
+{
+    const auto callback = [&parent_entry](unsigned* num_entries_out,
+                                          const std::string& directory,
+                                          const std::string& virtual_name) -> bool {
+        FSTEntry entry;
+        entry.virtualName = virtual_name;
+        entry.physicalName = directory + DIR_SEP + virtual_name;
+
+        if (IsDirectory(entry.physicalName)) {
             entry.isDirectory = true;
             // is a directory, lets go inside
             entry.size = ScanDirectoryTree(entry.physicalName, entry);
-            foundEntries += (u32)entry.size;
-        }
-        else
-        { // is a file
+            *num_entries_out += (int)entry.size;
+        } else { // is a file
             entry.isDirectory = false;
-            entry.size = GetSize(entry.physicalName.c_str());
+            entry.size = GetSize(entry.physicalName);
         }
-        ++foundEntries;
+        (*num_entries_out)++;
+
         // Push into the tree
-        parentEntry.children.push_back(entry);
-#ifdef _WIN32
-    } while (FindNextFile(hFind, &ffd) != 0);
-    FindClose(hFind);
-#else
-    }
-    closedir(dirp);
-#endif
-    // Return number of entries found.
-    return foundEntries;
+        parent_entry.children.push_back(entry);
+        return true;
+    };
+
+    unsigned num_entries;
+    return ForeachDirectoryEntry(&num_entries, directory, callback) ? num_entries : 0;
 }
 
 
-// Deletes the given directory and anything under it. Returns true on success.
 bool DeleteDirRecursively(const std::string &directory)
 {
-    LOG_TRACE(Common_Filesystem, "%s", directory.c_str());
-#ifdef _WIN32
-    // Find the first file in the directory.
-    WIN32_FIND_DATA ffd;
-    HANDLE hFind = FindFirstFile(Common::UTF8ToTStr(directory + "\\*").c_str(), &ffd);
+    const static auto callback = [](unsigned* num_entries_out,
+                                    const std::string& directory,
+                                    const std::string& virtual_name) -> bool {
+        std::string new_path = directory + DIR_SEP_CHR + virtual_name;
+        if (IsDirectory(new_path))
+            return DeleteDirRecursively(new_path);
 
-    if (hFind == INVALID_HANDLE_VALUE)
-    {
-        FindClose(hFind);
-        return false;
-    }
+        return Delete(new_path);
+    };
 
-    // windows loop
-    do
-    {
-        const std::string virtualName(Common::TStrToUTF8(ffd.cFileName));
-#else
-    struct dirent dirent, *result = nullptr;
-    DIR *dirp = opendir(directory.c_str());
-    if (!dirp)
+    if (!ForeachDirectoryEntry(nullptr, directory, callback))
         return false;
 
-    // non windows loop
-    while (!readdir_r(dirp, &dirent, &result) && result)
-    {
-        const std::string virtualName = result->d_name;
-#endif
-
-        // check for "." and ".."
-        if (((virtualName[0] == '.') && (virtualName[1] == '\0')) ||
-            ((virtualName[0] == '.') && (virtualName[1] == '.') &&
-             (virtualName[2] == '\0')))
-            continue;
-
-        std::string newPath = directory + DIR_SEP_CHR + virtualName;
-        if (IsDirectory(newPath))
-        {
-            if (!DeleteDirRecursively(newPath))
-            {
-                #ifndef _WIN32
-                closedir(dirp);
-                #endif
-
-                return false;
-            }
-        }
-        else
-        {
-            if (!FileUtil::Delete(newPath))
-            {
-                #ifndef _WIN32
-                closedir(dirp);
-                #endif
-
-                return false;
-            }
-        }
-
-#ifdef _WIN32
-    } while (FindNextFile(hFind, &ffd) != 0);
-    FindClose(hFind);
-#else
-    }
-    closedir(dirp);
-#endif
+    // Delete the outermost directory
     FileUtil::DeleteDir(directory);
-
     return true;
 }
 
@@ -861,8 +819,8 @@ void SplitFilename83(const std::string& filename, std::array<char, 9>& short_nam
     const std::string forbidden_characters = ".\"/\\[]:;=, ";
 
     // On a FAT32 partition, 8.3 names are stored as a 11 bytes array, filled with spaces.
-    short_name = {' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', '\0'};
-    extension = {' ', ' ', ' ', '\0'};
+    short_name = {{' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', '\0'}};
+    extension = {{' ', ' ', ' ', '\0'}};
 
     std::string::size_type point = filename.rfind('.');
     if (point == filename.size() - 1)

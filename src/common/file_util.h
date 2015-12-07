@@ -6,6 +6,7 @@
 
 #include <array>
 #include <fstream>
+#include <functional>
 #include <cstddef>
 #include <cstdio>
 #include <string>
@@ -96,9 +97,33 @@ bool Copy(const std::string &srcFilename, const std::string &destFilename);
 // creates an empty file filename, returns true on success
 bool CreateEmptyFile(const std::string &filename);
 
-// Scans the directory tree gets, starting from _Directory and adds the
-// results into parentEntry. Returns the number of files+directories found
-u32 ScanDirectoryTree(const std::string &directory, FSTEntry& parentEntry);
+/**
+ * @param num_entries_out to be assigned by the callable with the number of iterated directory entries, never null
+ * @param directory the path to the enclosing directory
+ * @param virtual_name the entry name, without any preceding directory info
+ * @return whether handling the entry succeeded
+ */
+using DirectoryEntryCallable = std::function<bool(unsigned* num_entries_out,
+                                                 const std::string& directory,
+                                                 const std::string& virtual_name)>;
+
+/**
+ * Scans a directory, calling the callback for each file/directory contained within.
+ * If the callback returns failure, scanning halts and this function returns failure as well
+ * @param num_entries_out assigned by the function with the number of iterated directory entries, can be null
+ * @param directory the directory to scan
+ * @param callback The callback which will be called for each entry
+ * @return whether scanning the directory succeeded
+ */
+bool ForeachDirectoryEntry(unsigned* num_entries_out, const std::string &directory, DirectoryEntryCallable callback);
+
+/**
+ * Scans the directory tree, storing the results.
+ * @param directory the parent directory to start scanning from
+ * @param parent_entry FSTEntry where the filesystem tree results will be stored.
+ * @return the total number of files/directories found
+ */
+unsigned ScanDirectoryTree(const std::string &directory, FSTEntry& parent_entry);
 
 // deletes the given directory and anything under it. Returns true on success.
 bool DeleteDirRecursively(const std::string &directory);

@@ -9,7 +9,7 @@ if [ "$TRAVIS_OS_NAME" = "linux" -o -z "$TRAVIS_OS_NAME" ]; then
     export CXX=g++-4.9
     mkdir -p $HOME/.local
 
-    curl http://www.cmake.org/files/v2.8/cmake-2.8.11-Linux-i386.tar.gz \
+    curl -L http://www.cmake.org/files/v2.8/cmake-2.8.11-Linux-i386.tar.gz \
         | tar -xz -C $HOME/.local --strip-components=1
 
     (
@@ -25,6 +25,6 @@ if [ "$TRAVIS_OS_NAME" = "linux" -o -z "$TRAVIS_OS_NAME" ]; then
 
 elif [ "$TRAVIS_OS_NAME" = "osx" ]; then
     brew update > /dev/null # silence the very verbose output
-    brew install qt5 glfw3 pkgconfig
+    brew install qt5 glfw3
     gem install xcpretty
 fi

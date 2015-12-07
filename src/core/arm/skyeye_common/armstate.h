@@ -153,9 +153,11 @@ public:
 
     // Reads/writes data in big/little endian format based on the
     // state of the E (endian) bit in the APSR.
+    u8 ReadMemory8(u32 address) const;
     u16 ReadMemory16(u32 address) const;
     u32 ReadMemory32(u32 address) const;
     u64 ReadMemory64(u32 address) const;
+    void WriteMemory8(u32 address, u8 data);
     void WriteMemory16(u32 address, u16 data);
     void WriteMemory32(u32 address, u32 data);
     void WriteMemory64(u32 address, u64 data);
@@ -191,23 +193,23 @@ public:
         return TFlag ? 2 : 4;
     }
 
-    std::array<u32, 16> Reg;      // The current register file
-    std::array<u32, 2> Reg_usr;
-    std::array<u32, 2> Reg_svc;   // R13_SVC R14_SVC
-    std::array<u32, 2> Reg_abort; // R13_ABORT R14_ABORT
-    std::array<u32, 2> Reg_undef; // R13 UNDEF R14 UNDEF
-    std::array<u32, 2> Reg_irq;   // R13_IRQ R14_IRQ
-    std::array<u32, 7> Reg_firq;  // R8---R14 FIRQ
-    std::array<u32, 7> Spsr;      // The exception psr's
-    std::array<u32, CP15_REGISTER_COUNT> CP15;
+    std::array<u32, 16> Reg{};      // The current register file
+    std::array<u32, 2> Reg_usr{};
+    std::array<u32, 2> Reg_svc{};   // R13_SVC R14_SVC
+    std::array<u32, 2> Reg_abort{}; // R13_ABORT R14_ABORT
+    std::array<u32, 2> Reg_undef{}; // R13 UNDEF R14 UNDEF
+    std::array<u32, 2> Reg_irq{};   // R13_IRQ R14_IRQ
+    std::array<u32, 7> Reg_firq{};  // R8---R14 FIRQ
+    std::array<u32, 7> Spsr{};      // The exception psr's
+    std::array<u32, CP15_REGISTER_COUNT> CP15{};
 
     // FPSID, FPSCR, and FPEXC
-    std::array<u32, VFP_SYSTEM_REGISTER_COUNT> VFP;
+    std::array<u32, VFP_SYSTEM_REGISTER_COUNT> VFP{};
 
     // VFPv2 and VFPv3-D16 has 16 doubleword registers (D0-D16 or S0-S31).
     // VFPv3-D32/ASIMD may have up to 32 doubleword registers (D0-D31),
     // and only 32 singleword registers are accessible (S0-S31).
-    std::array<u32, 64> ExtReg;
+    std::array<u32, 64> ExtReg{};
 
     u32 Emulate; // To start and stop emulation
     u32 Cpsr;    // The current PSR
@@ -247,6 +249,5 @@ private:
     static const u32 RESERVATION_GRANULE_MASK = 0xFFFFFFF8;
 
     u32 exclusive_tag; // The address for which the local monitor is in exclusive access mode
-    u32 exclusive_result;
     bool exclusive_state;
 };

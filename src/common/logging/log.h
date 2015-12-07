@@ -43,6 +43,7 @@ enum class Class : ClassType {
     Debug_Emulated,             ///< Debug messages from the emulated programs
     Debug_GPU,                  ///< GPU debugging tools
     Debug_Breakpoint,           ///< Logging breakpoints and watchpoints
+    Debug_GDBStub,              ///< GDB Stub
     Kernel,                     ///< The HLE implementation of the CTR kernel
     Kernel_SVC,                 ///< Kernel system calls
     Service,                    ///< HLE implementation of system services. Each major service
@@ -58,6 +59,7 @@ enum class Class : ClassType {
     Service_LDR,                ///< The LDR (3ds dll loader) service
     Service_NIM,                ///< The NIM (Network interface manager) service
     Service_NWM,                ///< The NWM (Network wlan manager) service
+    Service_CAM,                ///< The CAM (Camera) service
     Service_CFG,                ///< The CFG (Configuration) service
     Service_DSP,                ///< The DSP (DSP control) service
     Service_HID,                ///< The HID (Human interface device) service

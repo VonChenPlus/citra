@@ -17,12 +17,14 @@ set(SRCS
             debugger/profiler.cpp
             debugger/ramview.cpp
             debugger/registers.cpp
+            game_list.cpp
             util/spinbox.cpp
             util/util.cpp
             bootmanager.cpp
             hotkeys.cpp
             main.cpp
             citra-qt.rc
+            Info.plist
             )
 
 set(HEADERS
@@ -42,6 +44,7 @@ set(HEADERS
             debugger/profiler.h
             debugger/ramview.h
             debugger/registers.h
+            game_list.h
             util/spinbox.h
             util/util.h
             bootmanager.h
@@ -69,7 +72,10 @@ else()
 endif()
 
 if (APPLE)
-    add_executable(citra-qt MACOSX_BUNDLE ${SRCS} ${HEADERS} ${UI_HDRS})
+    set(MACOSX_ICON "../../dist/citra.icns")
+    set_source_files_properties(${MACOSX_ICON} PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
+    add_executable(citra-qt MACOSX_BUNDLE ${SRCS} ${HEADERS} ${UI_HDRS} ${MACOSX_ICON})
+    set_target_properties(citra-qt PROPERTIES MACOSX_BUNDLE_INFO_PLIST ${CMAKE_CURRENT_SOURCE_DIR}/Info.plist)
 else()
     add_executable(citra-qt ${SRCS} ${HEADERS} ${UI_HDRS})
 endif()
