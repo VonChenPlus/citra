@@ -7,12 +7,16 @@
 #include <array>
 #include <fstream>
 #include <functional>
-#include <cstddef>
 #include <cstdio>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 #include "common/common_types.h"
+
+#ifdef _MSC_VER
+#include "common/string_util.h"
+#endif
 
 // User directory indices for GetUserPath
 enum {
@@ -121,12 +125,13 @@ bool ForeachDirectoryEntry(unsigned* num_entries_out, const std::string &directo
  * Scans the directory tree, storing the results.
  * @param directory the parent directory to start scanning from
  * @param parent_entry FSTEntry where the filesystem tree results will be stored.
+ * @param recursion Number of children directories to read before giving up.
  * @return the total number of files/directories found
  */
-unsigned ScanDirectoryTree(const std::string &directory, FSTEntry& parent_entry);
+unsigned ScanDirectoryTree(const std::string &directory, FSTEntry& parent_entry, unsigned int recursion = 0);
 
 // deletes the given directory and anything under it. Returns true on success.
-bool DeleteDirRecursively(const std::string &directory);
+bool DeleteDirRecursively(const std::string &directory, unsigned int recursion = 256);
 
 // Returns the current directory
 std::string GetCurrentDir();
@@ -172,7 +177,6 @@ class IOFile : public NonCopyable
 {
 public:
     IOFile();
-    IOFile(std::FILE* file);
     IOFile(const std::string& filename, const char openmode[]);
 
     ~IOFile();
@@ -188,6 +192,11 @@ public:
     template <typename T>
     size_t ReadArray(T* data, size_t length)
     {
+        static_assert(std::is_standard_layout<T>(), "Given array does not consist of standard layout objects");
+#if (__GNUC__ >= 5) || defined(__clang__) || defined(_MSC_VER)
+        static_assert(std::is_trivially_copyable<T>(), "Given array does not consist of trivially copyable objects");
+#endif
+
         if (!IsOpen()) {
             m_good = false;
             return -1;
@@ -203,9 +212,10 @@ public:
     template <typename T>
     size_t WriteArray(const T* data, size_t length)
     {
-        static_assert(std::is_standard_layout<T>::value, "Given array does not consist of standard layout objects");
-        // TODO: gcc 4.8 does not support is_trivially_copyable, but we really should check for it here.
-        //static_assert(std::is_trivially_copyable<T>::value, "Given array does not consist of trivially copyable objects");
+        static_assert(std::is_standard_layout<T>(), "Given array does not consist of standard layout objects");
+#if (__GNUC__ >= 5) || defined(__clang__) || defined(_MSC_VER)
+        static_assert(std::is_trivially_copyable<T>(), "Given array does not consist of trivially copyable objects");
+#endif
 
         if (!IsOpen()) {
             m_good = false;
@@ -235,32 +245,24 @@ public:
         return WriteArray(&object, 1);
     }
 
-    bool IsOpen() { return nullptr != m_file; }
+    bool IsOpen() const { return nullptr != m_file; }
 
     // m_good is set to false when a read, write or other function fails
-    bool IsGood() {    return m_good; }
-    operator void*() { return m_good ? m_file : nullptr; }
-
-    std::FILE* ReleaseHandle();
-
-    std::FILE* GetHandle() { return m_file; }
-
-    void SetHandle(std::FILE* file);
+    bool IsGood() const { return m_good; }
+    explicit operator bool() const { return IsGood(); }
 
     bool Seek(s64 off, int origin);
-    u64 Tell();
-    u64 GetSize();
+    u64 Tell() const;
+    u64 GetSize() const;
     bool Resize(u64 size);
     bool Flush();
 
     // clear error state
     void Clear() { m_good = true; std::clearerr(m_file); }
 
-    std::FILE* m_file;
-    bool m_good;
 private:
-    IOFile(IOFile&);
-    IOFile& operator=(IOFile& other);
+    std::FILE* m_file = nullptr;
+    bool m_good = true;
 };
 
 }  // namespace

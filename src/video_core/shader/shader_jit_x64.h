@@ -4,11 +4,17 @@
 
 #pragma once
 
+#include <array>
+#include <cstddef>
+#include <utility>
+#include <vector>
+
 #include <nihstro/shader_bytecode.h>
 
+#include "common/bit_set.h"
+#include "common/common_types.h"
 #include "common/x64/emitter.h"
 
-#include "video_core/pica.h"
 #include "video_core/shader/shader.h"
 
 using nihstro::Instruction;
@@ -19,19 +25,22 @@ namespace Pica {
 
 namespace Shader {
 
-using CompiledShader = void(void* registers);
+/// Memory allocated for each compiled shader (64Kb)
+constexpr size_t MAX_SHADER_SIZE = 1024 * 64;
 
 /**
  * This class implements the shader JIT compiler. It recompiles a Pica shader program into x86_64
  * code that can be executed on the host machine directly.
  */
-class JitCompiler : public Gen::XCodeBlock {
+class JitShader : public Gen::XCodeBlock {
 public:
-    JitCompiler();
+    JitShader();
 
-    CompiledShader* Compile();
+    void Run(const ShaderSetup& setup, UnitState<false>& state, unsigned offset) const {
+        program(&setup, &state, code_ptr[offset]);
+    }
 
-    void Clear();
+    void Compile();
 
     void Compile_ADD(Instruction instr);
     void Compile_DP3(Instruction instr);
@@ -61,8 +70,9 @@ public:
     void Compile_MAD(Instruction instr);
 
 private:
-    void Compile_Block(unsigned stop);
-    void Compile_NextInstr(unsigned* offset);
+
+    void Compile_Block(unsigned end);
+    void Compile_NextInstr();
 
     void Compile_SwizzleSrc(Instruction instr, unsigned src_num, SourceRegister src_reg, Gen::X64Reg dest);
     void Compile_DestEnable(Instruction instr, Gen::X64Reg dest);
@@ -76,13 +86,39 @@ private:
     void Compile_EvaluateCondition(Instruction instr);
     void Compile_UniformCondition(Instruction instr);
 
+    /**
+     * Emits the code to conditionally return from a subroutine envoked by the `CALL` instruction.
+     */
+    void Compile_Return();
+
     BitSet32 PersistentCallerSavedRegs();
 
-    /// Pointer to the variable that stores the current Pica code offset. Used to handle nested code blocks.
-    unsigned* offset_ptr = nullptr;
+    /**
+     * Assertion evaluated at compile-time, but only triggered if executed at runtime.
+     * @param msg Message to be logged if the assertion fails.
+     */
+    void Compile_Assert(bool condition, const char* msg);
 
-    /// Set to true if currently in a loop, used to check for the existence of nested loops
-    bool looping = false;
+    /**
+     * Analyzes the entire shader program for `CALL` instructions before emitting any code,
+     * identifying the locations where a return needs to be inserted.
+     */
+    void FindReturnOffsets();
+
+    /// Mapping of Pica VS instructions to pointers in the emitted code
+    std::array<const u8*, 1024> code_ptr;
+
+    /// Offsets in code where a return needs to be inserted
+    std::vector<unsigned> return_offsets;
+
+    unsigned program_counter = 0;       ///< Offset of the next instruction to decode
+    bool looping = false;               ///< True if compiling a loop, used to check for nested loops
+
+    /// Branches that need to be fixed up once the entire shader program is compiled
+    std::vector<std::pair<Gen::FixupBranch, unsigned>> fixup_branches;
+
+    using CompiledShader = void(const void* setup, void* state, const u8* start_addr);
+    CompiledShader* program = nullptr;
 };
 
 } // Shader

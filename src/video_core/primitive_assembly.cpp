@@ -6,8 +6,7 @@
 
 #include "video_core/pica.h"
 #include "video_core/primitive_assembly.h"
-#include "video_core/debug_utils/debug_utils.h"
-#include "video_core/shader/shader_interpreter.h"
+#include "video_core/shader/shader.h"
 
 namespace Pica {
 
@@ -39,13 +38,12 @@ void PrimitiveAssembler<VertexType>::SubmitVertex(VertexType& vtx, TriangleHandl
 
             buffer[buffer_index] = vtx;
 
-            if (topology == Regs::TriangleTopology::Strip) {
-                strip_ready |= (buffer_index == 1);
+            strip_ready |= (buffer_index == 1);
+
+            if (topology == Regs::TriangleTopology::Strip)
                 buffer_index = !buffer_index;
-            } else if (topology == Regs::TriangleTopology::Fan) {
+            else if (topology == Regs::TriangleTopology::Fan)
                 buffer_index = 1;
-                strip_ready = true;
-            }
             break;
 
         default:
@@ -54,10 +52,20 @@ void PrimitiveAssembler<VertexType>::SubmitVertex(VertexType& vtx, TriangleHandl
     }
 }
 
+template<typename VertexType>
+void PrimitiveAssembler<VertexType>::Reset() {
+    buffer_index = 0;
+    strip_ready = false;
+}
+
+template<typename VertexType>
+void PrimitiveAssembler<VertexType>::Reconfigure(Regs::TriangleTopology topology) {
+    Reset();
+    this->topology = topology;
+}
+
 // explicitly instantiate use cases
 template
 struct PrimitiveAssembler<Shader::OutputVertex>;
-template
-struct PrimitiveAssembler<DebugUtils::GeometryDumper::Vertex>;
 
 } // namespace

@@ -100,21 +100,18 @@ enum : VAddr {
     SHARED_PAGE_SIZE      = 0x00001000,
     SHARED_PAGE_VADDR_END = SHARED_PAGE_VADDR + SHARED_PAGE_SIZE,
 
-    // TODO(yuriks): The size of this area is dynamic, the kernel grows
-    // it as more and more threads are created. For now we'll just use a
-    // hardcoded value.
     /// Area where TLS (Thread-Local Storage) buffers are allocated.
     TLS_AREA_VADDR     = 0x1FF82000,
     TLS_ENTRY_SIZE     = 0x200,
-    TLS_AREA_SIZE      = 300 * TLS_ENTRY_SIZE + 0x800, // Space for up to 300 threads + round to page size
-    TLS_AREA_VADDR_END = TLS_AREA_VADDR + TLS_AREA_SIZE,
-
 
     /// Equivalent to LINEAR_HEAP_VADDR, but expanded to cover the extra memory in the New 3DS.
     NEW_LINEAR_HEAP_VADDR     = 0x30000000,
     NEW_LINEAR_HEAP_SIZE      = 0x10000000,
     NEW_LINEAR_HEAP_VADDR_END = NEW_LINEAR_HEAP_VADDR + NEW_LINEAR_HEAP_SIZE,
 };
+
+bool IsValidVirtualAddress(const VAddr addr);
+bool IsValidPhysicalAddress(const PAddr addr);
 
 u8 Read8(VAddr addr);
 u16 Read16(VAddr addr);
@@ -126,7 +123,10 @@ void Write16(VAddr addr, u16 data);
 void Write32(VAddr addr, u32 data);
 void Write64(VAddr addr, u64 data);
 
-void WriteBlock(VAddr addr, const u8* data, size_t size);
+void ReadBlock(const VAddr src_addr, void* dest_buffer, size_t size);
+void WriteBlock(const VAddr dest_addr, const void* src_buffer, size_t size);
+void ZeroBlock(const VAddr dest_addr, const size_t size);
+void CopyBlock(VAddr dest_addr, VAddr src_addr, size_t size);
 
 u8* GetPointer(VAddr virtual_address);
 
@@ -147,5 +147,21 @@ VAddr PhysicalToVirtualAddress(PAddr addr);
  * @note This is currently implemented using PhysicalToVirtualAddress().
  */
 u8* GetPhysicalPointer(PAddr address);
+
+/**
+ * Adds the supplied value to the rasterizer resource cache counter of each
+ * page touching the region.
+ */
+void RasterizerMarkRegionCached(PAddr start, u32 size, int count_delta);
+
+/**
+ * Flushes any externally cached rasterizer resources touching the given region.
+ */
+void RasterizerFlushRegion(PAddr start, u32 size);
+
+/**
+ * Flushes and invalidates any externally cached rasterizer resources touching the given region.
+ */
+void RasterizerFlushAndInvalidateRegion(PAddr start, u32 size);
 
 }

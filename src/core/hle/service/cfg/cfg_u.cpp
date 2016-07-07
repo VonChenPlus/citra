@@ -2,7 +2,6 @@
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
-#include "core/hle/hle.h"
 #include "core/hle/service/cfg/cfg.h"
 #include "core/hle/service/cfg/cfg_u.h"
 
@@ -10,6 +9,7 @@ namespace Service {
 namespace CFG {
 
 const Interface::FunctionInfo FunctionTable[] = {
+    // cfg common
     {0x00010082, GetConfigInfoBlk2,     "GetConfigInfoBlk2"},
     {0x00020000, SecureInfoGetRegion,   "SecureInfoGetRegion"},
     {0x00030040, GenHashConsoleUnique,  "GenHashConsoleUnique"},

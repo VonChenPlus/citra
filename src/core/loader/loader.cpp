@@ -6,12 +6,9 @@
 #include <string>
 
 #include "common/logging/log.h"
-#include "common/make_unique.h"
 #include "common/string_util.h"
 
-#include "core/file_sys/archive_romfs.h"
 #include "core/hle/kernel/process.h"
-#include "core/hle/service/fs/archive.h"
 #include "core/loader/3dsx.h"
 #include "core/loader/elf.h"
 #include "core/loader/ncch.h"
@@ -68,6 +65,9 @@ FileType GuessFromExtension(const std::string& extension_) {
     if (extension == ".3dsx")
         return FileType::THREEDSX;
 
+    if (extension == ".cia")
+        return FileType::CIA;
+
     return FileType::Unknown;
 }
 
@@ -91,11 +91,41 @@ const char* GetFileTypeString(FileType type) {
     return "unknown";
 }
 
-ResultStatus LoadFile(const std::string& filename) {
+/**
+ * Get a loader for a file with a specific type
+ * @param file The file to load
+ * @param type The type of the file
+ * @param filename the file name (without path)
+ * @param filepath the file full path (with name)
+ * @return std::unique_ptr<AppLoader> a pointer to a loader object;  nullptr for unsupported type
+ */
+static std::unique_ptr<AppLoader> GetFileLoader(FileUtil::IOFile&& file, FileType type,
+    const std::string& filename, const std::string& filepath) {
+    switch (type) {
+
+    // 3DSX file format.
+    case FileType::THREEDSX:
+        return std::make_unique<AppLoader_THREEDSX>(std::move(file), filename, filepath);
+
+    // Standard ELF file format.
+    case FileType::ELF:
+        return std::make_unique<AppLoader_ELF>(std::move(file), filename);
+
+    // NCCH/NCSD container formats.
+    case FileType::CXI:
+    case FileType::CCI:
+        return std::make_unique<AppLoader_NCCH>(std::move(file), filepath);
+
+    default:
+        return nullptr;
+    }
+}
+
+std::unique_ptr<AppLoader> GetLoader(const std::string& filename) {
     FileUtil::IOFile file(filename, "rb");
     if (!file.IsOpen()) {
         LOG_ERROR(Loader, "Failed to load file %s", filename.c_str());
-        return ResultStatus::Error;
+        return nullptr;
     }
 
     std::string filename_filename, filename_extension;
@@ -112,53 +142,7 @@ ResultStatus LoadFile(const std::string& filename) {
 
     LOG_INFO(Loader, "Loading file %s as %s...", filename.c_str(), GetFileTypeString(type));
 
-    switch (type) {
-
-    //3DSX file format...
-    case FileType::THREEDSX:
-    {
-        AppLoader_THREEDSX app_loader(std::move(file), filename_filename, filename);
-        // Load application and RomFS
-        if (ResultStatus::Success == app_loader.Load()) {
-            Service::FS::RegisterArchiveType(Common::make_unique<FileSys::ArchiveFactory_RomFS>(app_loader), Service::FS::ArchiveIdCode::RomFS);
-            return ResultStatus::Success;
-        }
-        break;
-    }
-
-    // Standard ELF file format...
-    case FileType::ELF:
-        return AppLoader_ELF(std::move(file), filename_filename).Load();
-
-    // NCCH/NCSD container formats...
-    case FileType::CXI:
-    case FileType::CCI:
-    {
-        AppLoader_NCCH app_loader(std::move(file), filename);
-
-        // Load application and RomFS
-        if (ResultStatus::Success == app_loader.Load()) {
-            Service::FS::RegisterArchiveType(Common::make_unique<FileSys::ArchiveFactory_RomFS>(app_loader), Service::FS::ArchiveIdCode::RomFS);
-            return ResultStatus::Success;
-        }
-        break;
-    }
-
-    // CIA file format...
-    case FileType::CIA:
-        return ResultStatus::ErrorNotImplemented;
-
-    // Error occurred durring IdentifyFile...
-    case FileType::Error:
-
-    // IdentifyFile could know identify file type...
-    case FileType::Unknown:
-    {
-        LOG_CRITICAL(Loader, "File %s is of unknown type.", filename.c_str());
-        return ResultStatus::ErrorInvalidFormat;
-    }
-    }
-    return ResultStatus::Error;
+    return GetFileLoader(std::move(file), type, filename_filename, filename);
 }
 
 } // namespace Loader

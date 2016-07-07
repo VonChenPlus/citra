@@ -8,7 +8,7 @@
 
 #include "common/common_types.h"
 
-#include "video_core/hwrasterizer_base.h"
+#include "video_core/rasterizer_interface.h"
 
 class EmuWindow;
 
@@ -21,9 +21,6 @@ public:
         kFramebuffer_EFB,
         kFramebuffer_Texture
     };
-
-    RendererBase() : m_current_fps(0), m_current_frame(0) {
-    }
 
     virtual ~RendererBase() {
     }
@@ -38,7 +35,7 @@ public:
     virtual void SetWindow(EmuWindow* window) = 0;
 
     /// Initialize the renderer
-    virtual void Init() = 0;
+    virtual bool Init() = 0;
 
     /// Shutdown the renderer
     virtual void ShutDown() = 0;
@@ -46,18 +43,25 @@ public:
     // Getter/setter functions:
     // ------------------------
 
-    f32 GetCurrentframe() const {
+    f32 GetCurrentFPS() const {
         return m_current_fps;
     }
 
-    int current_frame() const {
+    int GetCurrentFrame() const {
         return m_current_frame;
     }
 
-    std::unique_ptr<HWRasterizer> hw_rasterizer;
+    VideoCore::RasterizerInterface* Rasterizer() const {
+        return rasterizer.get();
+    }
+
+    void RefreshRasterizerSetting();
 
 protected:
-    f32 m_current_fps;              ///< Current framerate, should be set by the renderer
-    int m_current_frame;            ///< Current frame, should be set by the renderer
+    std::unique_ptr<VideoCore::RasterizerInterface> rasterizer;
+    f32 m_current_fps   = 0.0f;     ///< Current framerate, should be set by the renderer
+    int m_current_frame = 0;        ///< Current frame, should be set by the renderer
 
+private:
+    bool opengl_rasterizer_active = false;
 };

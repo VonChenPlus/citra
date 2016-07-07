@@ -22,6 +22,7 @@ set(SRCS
             )
 
 set(HEADERS
+            alignment.h
             assert.h
             bit_field.h
             bit_set.h
@@ -41,13 +42,11 @@ set(HEADERS
             logging/filter.h
             logging/log.h
             logging/backend.h
-            make_unique.h
             math_util.h
             memory_util.h
             microprofile.h
             microprofileui.h
             platform.h
-            profiler.h
             profiler_reporting.h
             scm_rev.h
             scope_exit.h

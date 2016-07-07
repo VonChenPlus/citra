@@ -20,7 +20,14 @@ if [ "$TRAVIS_BRANCH" = "master" ]; then
 
         # move qt libs into app bundle for deployment
         $(brew --prefix)/opt/qt5/bin/macdeployqt "${REV_NAME}/citra-qt.app"
+
+        # move SDL2 libs into folder for deployment
+        dylibbundler -b -x "${REV_NAME}/citra" -cd -d "${REV_NAME}/libs" -p "@executable_path/libs/"
     fi
+
+    # Copy documentation
+    cp license.txt "$REV_NAME"
+    cp README.md "$REV_NAME"
 
     ARCHIVE_NAME="${REV_NAME}.tar.xz"
     tar -cJvf "$ARCHIVE_NAME" "$REV_NAME"

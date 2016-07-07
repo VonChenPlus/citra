@@ -12,35 +12,30 @@
 #include "core/hle/service/apt/apt_a.h"
 #include "core/hle/service/apt/apt_s.h"
 #include "core/hle/service/apt/apt_u.h"
+#include "core/hle/service/apt/bcfnt/bcfnt.h"
+#include "core/hle/service/fs/archive.h"
+#include "core/hle/service/ptm/ptm.h"
 
-#include "core/hle/hle.h"
 #include "core/hle/kernel/event.h"
 #include "core/hle/kernel/mutex.h"
 #include "core/hle/kernel/process.h"
 #include "core/hle/kernel/shared_memory.h"
-#include "core/hle/kernel/thread.h"
 
 namespace Service {
 namespace APT {
 
-// Address used for shared font (as observed on HW)
-// TODO(bunnei): This is the hard-coded address where we currently dump the shared font from via
-// https://github.com/citra-emu/3dsutils. This is technically a hack, and will not work at any
-// address other than 0x18000000 due to internal pointers in the shared font dump that would need to
-// be relocated. This might be fixed by dumping the shared font @ address 0x00000000 and then
-// correctly mapping it in Citra, however we still do not understand how the mapping is determined.
-static const VAddr SHARED_FONT_VADDR = 0x18000000;
-
 /// Handle to shared memory region designated to for shared system font
 static Kernel::SharedPtr<Kernel::SharedMemory> shared_font_mem;
+static bool shared_font_relocated = false;
 
 static Kernel::SharedPtr<Kernel::Mutex> lock;
 static Kernel::SharedPtr<Kernel::Event> notification_event; ///< APT notification event
 static Kernel::SharedPtr<Kernel::Event> parameter_event; ///< APT parameter event
 
-static std::shared_ptr<std::vector<u8>> shared_font;
-
 static u32 cpu_percent; ///< CPU time available to the running application
+
+// APT::CheckNew3DSApp will check this unknown_ns_state_field to determine processing mode
+static u8 unknown_ns_state_field;
 
 /// Parameter data to be returned in the next call to Glance/ReceiveParameter
 static MessageParameter next_parameter;
@@ -75,23 +70,25 @@ void Initialize(Service::Interface* self) {
 void GetSharedFont(Service::Interface* self) {
     u32* cmd_buff = Kernel::GetCommandBuffer();
 
-    if (shared_font != nullptr) {
-        // TODO(yuriks): This is a hack to keep this working right now even with our completely
-        // broken shared memory system.
-        shared_font_mem->fixed_address = SHARED_FONT_VADDR;
-        Kernel::g_current_process->vm_manager.MapMemoryBlock(shared_font_mem->fixed_address,
-                shared_font, 0, shared_font_mem->size, Kernel::MemoryState::Shared);
-
-        cmd_buff[0] = IPC::MakeHeader(0x44, 2, 2);
-        cmd_buff[1] = RESULT_SUCCESS.raw; // No error
-        cmd_buff[2] = SHARED_FONT_VADDR;
-        cmd_buff[3] = IPC::MoveHandleDesc();
-        cmd_buff[4] = Kernel::g_handle_table.Create(shared_font_mem).MoveFrom();
-    } else {
-        cmd_buff[0] = IPC::MakeHeader(0x44, 1, 0);
-        cmd_buff[1] = -1; // Generic error (not really possible to verify this on hardware)
-        LOG_ERROR(Kernel_SVC, "called, but %s has not been loaded!", SHARED_FONT);
+    // The shared font has to be relocated to the new address before being passed to the application.
+    VAddr target_address = Memory::PhysicalToVirtualAddress(shared_font_mem->linear_heap_phys_address);
+    // The shared font dumped by 3dsutils (https://github.com/citra-emu/3dsutils) uses this address as base,
+    // so we relocate it from there to our real address.
+    // TODO(Subv): This address is wrong if the shared font is dumped from a n3DS,
+    // we need a way to automatically calculate the original address of the font from the file.
+    static const VAddr SHARED_FONT_VADDR = 0x18000000;
+    if (!shared_font_relocated) {
+        BCFNT::RelocateSharedFont(shared_font_mem, SHARED_FONT_VADDR, target_address);
+        shared_font_relocated = true;
     }
+    cmd_buff[0] = IPC::MakeHeader(0x44, 2, 2);
+    cmd_buff[1] = RESULT_SUCCESS.raw; // No error
+    // Since the SharedMemory interface doesn't provide the address at which the memory was allocated,
+    // the real APT service calculates this address by scanning the entire address space (using svcQueryMemory)
+    // and searches for an allocation of the same size as the Shared Font.
+    cmd_buff[2] = target_address;
+    cmd_buff[3] = IPC::MoveHandleDesc();
+    cmd_buff[4] = Kernel::g_handle_table.Create(shared_font_mem).MoveFrom();
 }
 
 void NotifyToWait(Service::Interface* self) {
@@ -183,12 +180,12 @@ void SendParameter(Service::Interface* self) {
     }
 
     MessageParameter param;
-    param.buffer_size = buffer_size;
     param.destination_id = dst_app_id;
     param.sender_id = src_app_id;
     param.object = Kernel::g_handle_table.GetGeneric(handle);
     param.signal = signal_type;
-    param.data = Memory::GetPointer(buffer);
+    param.buffer.resize(buffer_size);
+    Memory::ReadBlock(buffer, param.buffer.data(), param.buffer.size());
 
     cmd_buff[1] = dest_applet->ReceiveParameter(param).raw;
 
@@ -206,16 +203,15 @@ void ReceiveParameter(Service::Interface* self) {
     cmd_buff[1] = RESULT_SUCCESS.raw; // No error
     cmd_buff[2] = next_parameter.sender_id;
     cmd_buff[3] = next_parameter.signal; // Signal type
-    cmd_buff[4] = next_parameter.buffer_size; // Parameter buffer size
+    cmd_buff[4] = next_parameter.buffer.size(); // Parameter buffer size
     cmd_buff[5] = 0x10;
     cmd_buff[6] = 0;
     if (next_parameter.object != nullptr)
         cmd_buff[6] = Kernel::g_handle_table.Create(next_parameter.object).MoveFrom();
-    cmd_buff[7] = (next_parameter.buffer_size << 14) | 2;
+    cmd_buff[7] = (next_parameter.buffer.size() << 14) | 2;
     cmd_buff[8] = buffer;
 
-    if (next_parameter.data)
-        memcpy(Memory::GetPointer(buffer), next_parameter.data, std::min(buffer_size, next_parameter.buffer_size));
+    Memory::WriteBlock(buffer, next_parameter.buffer.data(), next_parameter.buffer.size());
 
     LOG_WARNING(Service_APT, "called app_id=0x%08X, buffer_size=0x%08X", app_id, buffer_size);
 }
@@ -229,16 +225,15 @@ void GlanceParameter(Service::Interface* self) {
     cmd_buff[1] = RESULT_SUCCESS.raw; // No error
     cmd_buff[2] = next_parameter.sender_id;
     cmd_buff[3] = next_parameter.signal; // Signal type
-    cmd_buff[4] = next_parameter.buffer_size; // Parameter buffer size
+    cmd_buff[4] = next_parameter.buffer.size(); // Parameter buffer size
     cmd_buff[5] = 0x10;
     cmd_buff[6] = 0;
     if (next_parameter.object != nullptr)
         cmd_buff[6] = Kernel::g_handle_table.Create(next_parameter.object).MoveFrom();
-    cmd_buff[7] = (next_parameter.buffer_size << 14) | 2;
+    cmd_buff[7] = (next_parameter.buffer.size() << 14) | 2;
     cmd_buff[8] = buffer;
 
-    if (next_parameter.data)
-        memcpy(Memory::GetPointer(buffer), next_parameter.data, std::min(buffer_size, next_parameter.buffer_size));
+    Memory::WriteBlock(buffer, next_parameter.buffer.data(), std::min(static_cast<size_t>(buffer_size), next_parameter.buffer.size()));
 
     LOG_WARNING(Service_APT, "called app_id=0x%08X, buffer_size=0x%08X", app_id, buffer_size);
 }
@@ -264,6 +259,10 @@ void PrepareToStartApplication(Service::Interface* self) {
     u32 title_info3  = cmd_buff[3];
     u32 title_info4  = cmd_buff[4];
     u32 flags        = cmd_buff[5];
+
+    if (flags & 0x00000100) {
+        unknown_ns_state_field = 1;
+    }
 
     cmd_buff[1] = RESULT_SUCCESS.raw; // No error
 
@@ -372,12 +371,92 @@ void StartLibraryApplet(Service::Interface* self) {
         return;
     }
 
+    size_t buffer_size = cmd_buff[2];
+    VAddr buffer_addr = cmd_buff[6];
+
     AppletStartupParameter parameter;
-    parameter.buffer_size = cmd_buff[2];
     parameter.object = Kernel::g_handle_table.GetGeneric(cmd_buff[4]);
-    parameter.data = Memory::GetPointer(cmd_buff[6]);
+    parameter.buffer.resize(buffer_size);
+    Memory::ReadBlock(buffer_addr, parameter.buffer.data(), parameter.buffer.size());
 
     cmd_buff[1] = applet->Start(parameter).raw;
+}
+
+void SetNSStateField(Service::Interface* self) {
+    u32* cmd_buff = Kernel::GetCommandBuffer();
+
+    unknown_ns_state_field = cmd_buff[1];
+
+    cmd_buff[0] = IPC::MakeHeader(0x55, 1, 0);
+    cmd_buff[1] = RESULT_SUCCESS.raw;
+    LOG_WARNING(Service_APT, "(STUBBED) unknown_ns_state_field=%u", unknown_ns_state_field);
+}
+
+void GetNSStateField(Service::Interface* self) {
+    u32* cmd_buff = Kernel::GetCommandBuffer();
+
+    cmd_buff[0] = IPC::MakeHeader(0x56, 2, 0);
+    cmd_buff[1] = RESULT_SUCCESS.raw;
+    cmd_buff[8] = unknown_ns_state_field;
+    LOG_WARNING(Service_APT, "(STUBBED) unknown_ns_state_field=%u", unknown_ns_state_field);
+}
+
+void GetAppletInfo(Service::Interface* self) {
+    u32* cmd_buff = Kernel::GetCommandBuffer();
+    auto app_id = static_cast<AppletId>(cmd_buff[1]);
+
+    if (auto applet = HLE::Applets::Applet::Get(app_id)) {
+        // TODO(Subv): Get the title id for the current applet and write it in the response[2-3]
+        cmd_buff[1] = RESULT_SUCCESS.raw;
+        cmd_buff[4] = static_cast<u32>(Service::FS::MediaType::NAND);
+        cmd_buff[5] = 1; // Registered
+        cmd_buff[6] = 1; // Loaded
+        cmd_buff[7] = 0; // Applet Attributes
+    } else {
+        cmd_buff[1] = ResultCode(ErrorDescription::NotFound, ErrorModule::Applet,
+                                 ErrorSummary::NotFound, ErrorLevel::Status).raw;
+    }
+    LOG_WARNING(Service_APT, "(stubbed) called appid=%u", app_id);
+}
+
+void GetStartupArgument(Service::Interface* self) {
+    u32* cmd_buff = Kernel::GetCommandBuffer();
+    u32 parameter_size = cmd_buff[1];
+    StartupArgumentType startup_argument_type = static_cast<StartupArgumentType>(cmd_buff[2]);
+
+    if (parameter_size >= 0x300) {
+        LOG_ERROR(Service_APT, "Parameter size is outside the valid range (capped to 0x300): parameter_size=0x%08x", parameter_size);
+        return;
+    }
+
+    LOG_WARNING(Service_APT,"(stubbed) called startup_argument_type=%u , parameter_size=0x%08x , parameter_value=0x%08x",
+                startup_argument_type, parameter_size, Memory::Read32(cmd_buff[41]));
+
+    cmd_buff[1] = RESULT_SUCCESS.raw;
+    cmd_buff[2] = (parameter_size > 0) ? 1 : 0;
+}
+
+void CheckNew3DSApp(Service::Interface* self) {
+    u32* cmd_buff = Kernel::GetCommandBuffer();
+
+    if (unknown_ns_state_field) {
+        cmd_buff[1] = RESULT_SUCCESS.raw;
+        cmd_buff[2] = 0;
+    } else {
+        PTM::CheckNew3DS(self);
+    }
+
+    cmd_buff[0] = IPC::MakeHeader(0x101, 2, 0);
+    LOG_WARNING(Service_APT, "(STUBBED) called");
+}
+
+void CheckNew3DS(Service::Interface* self) {
+    u32* cmd_buff = Kernel::GetCommandBuffer();
+
+    PTM::CheckNew3DS(self);
+
+    cmd_buff[0] = IPC::MakeHeader(0x102, 2, 0);
+    LOG_WARNING(Service_APT, "(STUBBED) called");
 }
 
 void Init() {
@@ -399,14 +478,12 @@ void Init() {
     FileUtil::IOFile file(filepath, "rb");
 
     if (file.IsOpen()) {
-        // Read shared font data
-        shared_font = std::make_shared<std::vector<u8>>((size_t)file.GetSize());
-        file.ReadBytes(shared_font->data(), shared_font->size());
-
         // Create shared font memory object
         using Kernel::MemoryPermission;
-        shared_font_mem = Kernel::SharedMemory::Create(3 * 1024 * 1024, // 3MB
-                MemoryPermission::ReadWrite, MemoryPermission::Read, "APT_U:shared_font_mem");
+        shared_font_mem = Kernel::SharedMemory::Create(nullptr, 0x332000, // 3272 KB
+                MemoryPermission::ReadWrite, MemoryPermission::Read, 0, Kernel::MemoryRegion::SYSTEM, "APT:SharedFont");
+        // Read shared font data
+        file.ReadBytes(shared_font_mem->GetPointer(), file.GetSize());
     } else {
         LOG_WARNING(Service_APT, "Unable to load shared font: %s", filepath.c_str());
         shared_font_mem = nullptr;
@@ -415,18 +492,19 @@ void Init() {
     lock = Kernel::Mutex::Create(false, "APT_U:Lock");
 
     cpu_percent = 0;
+    unknown_ns_state_field = 0;
 
     // TODO(bunnei): Check if these are created in Initialize or on APT process startup.
-    notification_event = Kernel::Event::Create(RESETTYPE_ONESHOT, "APT_U:Notification");
-    parameter_event = Kernel::Event::Create(RESETTYPE_ONESHOT, "APT_U:Start");
+    notification_event = Kernel::Event::Create(Kernel::ResetType::OneShot, "APT_U:Notification");
+    parameter_event = Kernel::Event::Create(Kernel::ResetType::OneShot, "APT_U:Start");
 
     next_parameter.signal = static_cast<u32>(SignalType::AppJustStarted);
     next_parameter.destination_id = 0x300;
 }
 
 void Shutdown() {
-    shared_font = nullptr;
     shared_font_mem = nullptr;
+    shared_font_relocated = false;
     lock = nullptr;
     notification_event = nullptr;
     parameter_event = nullptr;

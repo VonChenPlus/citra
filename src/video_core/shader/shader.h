@@ -4,17 +4,23 @@
 
 #pragma once
 
+#include <array>
+#include <cstddef>
+#include <memory>
+#include <type_traits>
 #include <vector>
 
 #include <boost/container/static_vector.hpp>
 
-#include <nihstro/shader_binary.h>
+#include <nihstro/shader_bytecode.h>
 
+#include "common/assert.h"
 #include "common/common_funcs.h"
 #include "common/common_types.h"
 #include "common/vector_math.h"
 
 #include "video_core/pica.h"
+#include "video_core/pica_types.h"
 
 using nihstro::RegisterType;
 using nihstro::SourceRegister;
@@ -25,7 +31,7 @@ namespace Pica {
 namespace Shader {
 
 struct InputVertex {
-    Math::Vec4<float24> attr[16];
+    alignas(16) Math::Vec4<float24> attr[16];
 };
 
 struct OutputVertex {
@@ -37,17 +43,20 @@ struct OutputVertex {
     Math::Vec4<float24> color;
     Math::Vec2<float24> tc0;
     Math::Vec2<float24> tc1;
-    float24 pad[6];
+    float24 tc0_w;
+    INSERT_PADDING_WORDS(1);
+    Math::Vec3<float24> view;
+    INSERT_PADDING_WORDS(1);
     Math::Vec2<float24> tc2;
 
     // Padding for optimal alignment
-    float24 pad2[4];
+    INSERT_PADDING_WORDS(4);
 
     // Attributes used to store intermediate results
 
     // position after perspective divide
     Math::Vec3<float24> screenpos;
-    float24 pad3;
+    INSERT_PADDING_WORDS(1);
 
     // Linear interpolation
     // factor: 0=this, 1=vtx
@@ -75,6 +84,14 @@ struct OutputVertex {
 static_assert(std::is_pod<OutputVertex>::value, "Structure is not POD");
 static_assert(sizeof(OutputVertex) == 32 * sizeof(float), "OutputVertex has invalid size");
 
+struct OutputRegisters {
+    OutputRegisters() = default;
+
+    alignas(16) Math::Vec4<float24> value[16];
+
+    OutputVertex ToVertex(const Regs::ShaderConfig& config);
+};
+static_assert(std::is_pod<OutputRegisters>::value, "Structure is not POD");
 
 // Helper structure used to keep track of data useful for inspection of shader emulation
 template<bool full_debugging>
@@ -258,44 +275,28 @@ struct UnitState {
     struct Registers {
         // The registers are accessed by the shader JIT using SSE instructions, and are therefore
         // required to be 16-byte aligned.
-        Math::Vec4<float24> MEMORY_ALIGNED16(input[16]);
-        Math::Vec4<float24> MEMORY_ALIGNED16(output[16]);
-        Math::Vec4<float24> MEMORY_ALIGNED16(temporary[16]);
+        alignas(16) Math::Vec4<float24> input[16];
+        alignas(16) Math::Vec4<float24> temporary[16];
     } registers;
     static_assert(std::is_pod<Registers>::value, "Structure is not POD");
 
-    u32 program_counter;
+    OutputRegisters output_registers;
+
     bool conditional_code[2];
 
     // Two Address registers and one loop counter
     // TODO: How many bits do these actually have?
     s32 address_registers[3];
 
-    enum {
-        INVALID_ADDRESS = 0xFFFFFFFF
-    };
-
-    struct CallStackElement {
-        u32 final_address;  // Address upon which we jump to return_address
-        u32 return_address; // Where to jump when leaving scope
-        u8 repeat_counter;  // How often to repeat until this call stack element is removed
-        u8 loop_increment;  // Which value to add to the loop counter after an iteration
-                            // TODO: Should this be a signed value? Does it even matter?
-        u32 loop_address;   // The address where we'll return to after each loop iteration
-    };
-
-    // TODO: Is there a maximal size for this?
-    boost::container::static_vector<CallStackElement, 16> call_stack;
-
     DebugData<Debug> debug;
 
     static size_t InputOffset(const SourceRegister& reg) {
         switch (reg.GetRegisterType()) {
         case RegisterType::Input:
-            return offsetof(UnitState::Registers, input) + reg.GetIndex()*sizeof(Math::Vec4<float24>);
+            return offsetof(UnitState, registers.input) + reg.GetIndex()*sizeof(Math::Vec4<float24>);
 
         case RegisterType::Temporary:
-            return offsetof(UnitState::Registers, temporary) + reg.GetIndex()*sizeof(Math::Vec4<float24>);
+            return offsetof(UnitState, registers.temporary) + reg.GetIndex()*sizeof(Math::Vec4<float24>);
 
         default:
             UNREACHABLE();
@@ -306,10 +307,10 @@ struct UnitState {
     static size_t OutputOffset(const DestRegister& reg) {
         switch (reg.GetRegisterType()) {
         case RegisterType::Output:
-            return offsetof(UnitState::Registers, output) + reg.GetIndex()*sizeof(Math::Vec4<float24>);
+            return offsetof(UnitState, output_registers.value) + reg.GetIndex()*sizeof(Math::Vec4<float24>);
 
         case RegisterType::Temporary:
-            return offsetof(UnitState::Registers, temporary) + reg.GetIndex()*sizeof(Math::Vec4<float24>);
+            return offsetof(UnitState, registers.temporary) + reg.GetIndex()*sizeof(Math::Vec4<float24>);
 
         default:
             UNREACHABLE();
@@ -318,34 +319,65 @@ struct UnitState {
     }
 };
 
-/**
- * Performs any shader unit setup that only needs to happen once per shader (as opposed to once per
- * vertex, which would happen within the `Run` function).
- * @param state Shader unit state, must be setup per shader and per shader unit
- */
-void Setup(UnitState<false>& state);
+/// Clears the shader cache
+void ClearCache();
 
-/// Performs any cleanup when the emulator is shutdown
-void Shutdown();
+struct ShaderSetup {
 
-/**
- * Runs the currently setup shader
- * @param state Shader unit state, must be setup per shader and per shader unit
- * @param input Input vertex into the shader
- * @param num_attributes The number of vertex shader attributes
- * @return The output vertex, after having been processed by the vertex shader
- */
-OutputVertex Run(UnitState<false>& state, const InputVertex& input, int num_attributes);
+    struct {
+        // The float uniforms are accessed by the shader JIT using SSE instructions, and are
+        // therefore required to be 16-byte aligned.
+        alignas(16) Math::Vec4<float24> f[96];
 
-/**
- * Produce debug information based on the given shader and input vertex
- * @param input Input vertex into the shader
- * @param num_attributes The number of vertex shader attributes
- * @param config Configuration object for the shader pipeline
- * @param setup Setup object for the shader pipeline
- * @return Debug information for this shader with regards to the given vertex
- */
-DebugData<true> ProduceDebugInfo(const InputVertex& input, int num_attributes, const Regs::ShaderConfig& config, const State::ShaderSetup& setup);
+        std::array<bool, 16> b;
+        std::array<Math::Vec4<u8>, 4> i;
+    } uniforms;
+
+    static size_t UniformOffset(RegisterType type, unsigned index) {
+        switch (type) {
+        case RegisterType::FloatUniform:
+            return offsetof(ShaderSetup, uniforms.f) + index*sizeof(Math::Vec4<float24>);
+
+        case RegisterType::BoolUniform:
+            return offsetof(ShaderSetup, uniforms.b) + index*sizeof(bool);
+
+        case RegisterType::IntUniform:
+            return offsetof(ShaderSetup, uniforms.i) + index*sizeof(Math::Vec4<u8>);
+
+        default:
+            UNREACHABLE();
+            return 0;
+        }
+    }
+
+    std::array<u32, 1024> program_code;
+    std::array<u32, 1024> swizzle_data;
+
+    /**
+     * Performs any shader unit setup that only needs to happen once per shader (as opposed to once per
+     * vertex, which would happen within the `Run` function).
+     */
+    void Setup();
+
+    /**
+     * Runs the currently setup shader
+     * @param state Shader unit state, must be setup per shader and per shader unit
+     * @param input Input vertex into the shader
+     * @param num_attributes The number of vertex shader attributes
+     */
+    void Run(UnitState<false>& state, const InputVertex& input, int num_attributes);
+
+    /**
+     * Produce debug information based on the given shader and input vertex
+     * @param input Input vertex into the shader
+     * @param num_attributes The number of vertex shader attributes
+     * @param config Configuration object for the shader pipeline
+     * @param setup Setup object for the shader pipeline
+     * @return Debug information for this shader with regards to the given vertex
+     */
+    DebugData<true> ProduceDebugInfo(const InputVertex& input, int num_attributes, const Regs::ShaderConfig& config, const ShaderSetup& setup);
+
+};
 
 } // namespace Shader
 

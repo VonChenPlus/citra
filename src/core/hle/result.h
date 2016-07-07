@@ -5,7 +5,6 @@
 #pragma once
 
 #include <new>
-#include <type_traits>
 #include <utility>
 
 #include "common/assert.h"
@@ -18,8 +17,18 @@
 /// Detailed description of the error. This listing is likely incomplete.
 enum class ErrorDescription : u32 {
     Success = 0,
-    FS_NotFound = 100,
+    WrongPermission = 46,
+    OS_InvalidBufferDescriptor = 48,
+    WrongAddress = 53,
+    FS_ArchiveNotMounted = 101,
+    FS_NotFound = 120,
+    FS_AlreadyExists = 190,
+    FS_InvalidOpenFlags = 230,
+    FS_NotAFile = 250,
     FS_NotFormatted = 340, ///< This is used by the FS service when creating a SaveData archive
+    OutofRangeOrMisalignedAddress = 513, // TODO(purpasmart): Check if this name fits its actual usage
+    GPU_FirstInitialization = 519,
+    FS_InvalidPath = 702,
     InvalidSection = 1000,
     TooLarge = 1001,
     NotAuthorized = 1002,
@@ -127,15 +136,28 @@ enum class ErrorModule : u32 {
     MCU = 72,
     NS = 73,
     News = 74,
-    RO_1 = 75,
+    RO = 75,
     GD = 76,
     CardSPI = 77,
     EC = 78,
-    RO_2 = 79,
-    WebBrowser = 80,
-    Test = 81,
-    ENC = 82,
-    PIA = 83,
+    WebBrowser = 79,
+    Test = 80,
+    ENC = 81,
+    PIA = 82,
+    ACT = 83,
+    VCTL = 84,
+    OLV = 85,
+    NEIA = 86,
+    NPNS = 87,
+
+    AVD = 90,
+    L2B = 91,
+    MVD = 92,
+    NFC = 93,
+    UART = 94,
+    SPM = 95,
+    QTM = 96,
+    NFP = 97,
 
     Application = 254,
     InvalidResult = 255
@@ -192,10 +214,10 @@ union ResultCode {
     explicit ResultCode(u32 raw) : raw(raw) {}
     ResultCode(ErrorDescription description_, ErrorModule module_,
             ErrorSummary summary_, ErrorLevel level_) : raw(0) {
-        description = description_;
-        module = module_;
-        summary = summary_;
-        level = level_;
+        description.Assign(description_);
+        module.Assign(module_);
+        summary.Assign(summary_);
+        level.Assign(level_);
     }
 
     ResultCode& operator=(const ResultCode& o) { raw = o.raw; return *this; }
@@ -268,7 +290,6 @@ public:
         : result_code(error_code)
     {
         ASSERT(error_code.IsError());
-        UpdateDebugPtr();
     }
 
     /**
@@ -286,40 +307,37 @@ public:
         : result_code(o.result_code)
     {
         if (!o.empty()) {
-            new (&storage) T(*o.GetPointer());
+            new (&object) T(o.object);
         }
-        UpdateDebugPtr();
     }
 
     ResultVal(ResultVal&& o)
         : result_code(o.result_code)
     {
         if (!o.empty()) {
-            new (&storage) T(std::move(*o.GetPointer()));
+            new (&object) T(std::move(o.object));
         }
-        UpdateDebugPtr();
     }
 
     ~ResultVal() {
         if (!empty()) {
-            GetPointer()->~T();
+            object.~T();
         }
     }
 
     ResultVal& operator=(const ResultVal& o) {
         if (!empty()) {
             if (!o.empty()) {
-                *GetPointer() = *o.GetPointer();
+                object = o.object;
             } else {
-                GetPointer()->~T();
+                object.~T();
             }
         } else {
             if (!o.empty()) {
-                new (&storage) T(*o.GetPointer());
+                new (&object) T(o.object);
             }
         }
         result_code = o.result_code;
-        UpdateDebugPtr();
 
         return *this;
     }
@@ -332,11 +350,10 @@ public:
     void emplace(ResultCode success_code, Args&&... args) {
         ASSERT(success_code.IsSuccess());
         if (!empty()) {
-            GetPointer()->~T();
+            object.~T();
         }
-        new (&storage) T(std::forward<Args>(args)...);
+        new (&object) T(std::forward<Args>(args)...);
         result_code = success_code;
-        UpdateDebugPtr();
     }
 
     /// Returns true if the `ResultVal` contains an error code and no value.
@@ -349,15 +366,15 @@ public:
 
     ResultCode Code() const { return result_code; }
 
-    const T& operator* () const { return *GetPointer(); }
-          T& operator* ()       { return *GetPointer(); }
-    const T* operator->() const { return  GetPointer(); }
-          T* operator->()       { return  GetPointer(); }
+    const T& operator* () const { return object; }
+          T& operator* ()       { return object; }
+    const T* operator->() const { return &object; }
+          T* operator->()       { return &object; }
 
     /// Returns the value contained in this `ResultVal`, or the supplied default if it is missing.
     template <typename U>
     T ValueOr(U&& value) const {
-        return !empty() ? *GetPointer() : std::move(value);
+        return !empty() ? object : std::move(value);
     }
 
     /// Asserts that the result succeeded and returns a reference to it.
@@ -371,31 +388,10 @@ public:
     }
 
 private:
-    typedef typename std::aligned_storage<sizeof(T), std::alignment_of<T>::value>::type StorageType;
-
-    StorageType storage;
+    // A union is used to allocate the storage for the value, while allowing us to construct and
+    // destruct it at will.
+    union { T object; };
     ResultCode result_code;
-#ifdef _DEBUG
-    // The purpose of this pointer is to aid inspecting the type with a debugger, eliminating the
-    // need to cast `storage` to a pointer or pay attention to `result_code`.
-    const T* debug_ptr;
-#endif
-
-    void UpdateDebugPtr() {
-#ifdef _DEBUG
-        debug_ptr = empty() ? nullptr : static_cast<const T*>(static_cast<const void*>(&storage));
-#endif
-    }
-
-    const T* GetPointer() const {
-        ASSERT(!empty());
-        return static_cast<const T*>(static_cast<const void*>(&storage));
-    }
-
-    T* GetPointer() {
-        ASSERT(!empty());
-        return static_cast<T*>(static_cast<void*>(&storage));
-    }
 };
 
 /**

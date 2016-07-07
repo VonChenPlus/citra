@@ -6,13 +6,54 @@
 
 #include <atomic>
 
+#include <QImage>
 #include <QRunnable>
 #include <QStandardItem>
 #include <QString>
 
 #include "citra_qt/util/util.h"
 #include "common/string_util.h"
+#include "common/color.h"
 
+#include "core/loader/smdh.h"
+
+#include "video_core/utils.h"
+
+/**
+ * Gets game icon from SMDH
+ * @param sdmh SMDH data
+ * @param large If true, returns large icon (48x48), otherwise returns small icon (24x24)
+ * @return QPixmap game icon
+ */
+static QPixmap GetQPixmapFromSMDH(const Loader::SMDH& smdh, bool large) {
+    std::vector<u16> icon_data = smdh.GetIcon(large);
+    const uchar* data = reinterpret_cast<const uchar*>(icon_data.data());
+    int size = large ? 48 : 24;
+    QImage icon(data, size, size, QImage::Format::Format_RGB16);
+    return QPixmap::fromImage(icon);
+}
+
+/**
+ * Gets the default icon (for games without valid SMDH)
+ * @param large If true, returns large icon (48x48), otherwise returns small icon (24x24)
+ * @return QPixmap default icon
+ */
+static QPixmap GetDefaultIcon(bool large) {
+    int size = large ? 48 : 24;
+    QPixmap icon(size, size);
+    icon.fill(Qt::transparent);
+    return icon;
+}
+
+/**
+ * Gets the short game title fromn SMDH
+ * @param sdmh SMDH data
+ * @param language title language
+ * @return QString short title
+ */
+static QString GetQStringShortTitleFromSMDH(const Loader::SMDH& smdh, Loader::SMDH::TitleLanguage language) {
+    return QString::fromUtf16(smdh.GetShortTitle(language).data());
+}
 
 class GameListItem : public QStandardItem {
 
@@ -27,29 +68,43 @@ public:
  * A specialization of GameListItem for path values.
  * This class ensures that for every full path value it holds, a correct string representation
  * of just the filename (with no extension) will be displayed to the user.
+ * If this class recieves valid SMDH data, it will also display game icons and titles.
  */
 class GameListItemPath : public GameListItem {
 
 public:
     static const int FullPathRole = Qt::UserRole + 1;
+    static const int TitleRole = Qt::UserRole + 2;
 
     GameListItemPath(): GameListItem() {}
-    GameListItemPath(const QString& game_path): GameListItem()
+    GameListItemPath(const QString& game_path, const std::vector<u8>& smdh_data): GameListItem()
     {
         setData(game_path, FullPathRole);
+
+        if (!Loader::IsValidSMDH(smdh_data)) {
+            // SMDH is not valid, set a default icon
+            setData(GetDefaultIcon(true), Qt::DecorationRole);
+            return;
+        }
+
+        Loader::SMDH smdh;
+        memcpy(&smdh, smdh_data.data(), sizeof(Loader::SMDH));
+
+        // Get icon from SMDH
+        setData(GetQPixmapFromSMDH(smdh, true), Qt::DecorationRole);
+
+        // Get title form SMDH
+        setData(GetQStringShortTitleFromSMDH(smdh, Loader::SMDH::TitleLanguage::English), TitleRole);
     }
 
-    void setData(const QVariant& value, int role) override
-    {
-        // By specializing setData for FullPathRole, we can ensure that the two string
-        // representations of the data are always accurate and in the correct format.
-        if (role == FullPathRole) {
+    QVariant data(int role) const override {
+        if (role == Qt::DisplayRole) {
             std::string filename;
-            Common::SplitPath(value.toString().toStdString(), nullptr, &filename, nullptr);
-            GameListItem::setData(QString::fromStdString(filename), Qt::DisplayRole);
-            GameListItem::setData(value, FullPathRole);
+            Common::SplitPath(data(FullPathRole).toString().toStdString(), nullptr, &filename, nullptr);
+            QString title = data(TitleRole).toString();
+            return QString::fromStdString(filename) + (title.isEmpty() ? "" : "\n    " + title);
         } else {
-            GameListItem::setData(value, role);
+            return GameListItem::data(role);
         }
     }
 };
@@ -126,5 +181,5 @@ private:
     bool deep_scan;
     std::atomic_bool stop_processing;
 
-    void AddFstEntriesToGameList(const std::string& dir_path, bool deep_scan);
+    void AddFstEntriesToGameList(const std::string& dir_path, unsigned int recursion = 0);
 };

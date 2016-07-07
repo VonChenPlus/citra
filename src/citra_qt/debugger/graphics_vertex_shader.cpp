@@ -19,6 +19,8 @@
 #include "citra_qt/debugger/graphics_vertex_shader.h"
 #include "citra_qt/util/util.h"
 
+#include "video_core/pica.h"
+#include "video_core/pica_state.h"
 #include "video_core/shader/shader.h"
 
 using nihstro::OpCode;
@@ -177,9 +179,17 @@ QVariant GraphicsVertexShaderModel::data(const QModelIndex& index, int role) con
                     AlignToColumn(kOutputColumnWidth);
                     print_input(output, src1, swizzle.negate_src1, SelectorToString(swizzle.src1_selector));
                     AlignToColumn(kInputOperandColumnWidth);
-                    print_input(output, src2, swizzle.negate_src2, SelectorToString(swizzle.src2_selector));
+                    if (src_is_inverted) {
+                      print_input(output, src2, swizzle.negate_src2, SelectorToString(swizzle.src2_selector));
+                    } else {
+                      print_input(output, src2, swizzle.negate_src2, SelectorToString(swizzle.src2_selector), true, instr.mad.AddressRegisterName());
+                    }
                     AlignToColumn(kInputOperandColumnWidth);
-                    print_input(output, src3, swizzle.negate_src3, SelectorToString(swizzle.src3_selector));
+                    if (src_is_inverted) {
+                      print_input(output, src3, swizzle.negate_src3, SelectorToString(swizzle.src3_selector), true, instr.mad.AddressRegisterName());
+                    } else {
+                      print_input(output, src3, swizzle.negate_src3, SelectorToString(swizzle.src3_selector));
+                    }
                     AlignToColumn(kInputOperandColumnWidth);
                     break;
                 }
@@ -355,7 +365,7 @@ GraphicsVertexShaderWidget::GraphicsVertexShaderWidget(std::shared_ptr< Pica::De
         input_data[i]->setValidator(new QDoubleValidator(input_data[i]));
     }
 
-    breakpoint_warning = new QLabel(tr("(data only available at VertexLoaded breakpoints)"));
+    breakpoint_warning = new QLabel(tr("(data only available at vertex shader invocation breakpoints)"));
 
     // TODO: Add some button for jumping to the shader entry point
 
@@ -444,7 +454,7 @@ GraphicsVertexShaderWidget::GraphicsVertexShaderWidget(std::shared_ptr< Pica::De
 
 void GraphicsVertexShaderWidget::OnBreakPointHit(Pica::DebugContext::Event event, void* data) {
     auto input = static_cast<Pica::Shader::InputVertex*>(data);
-    if (event == Pica::DebugContext::Event::VertexLoaded) {
+    if (event == Pica::DebugContext::Event::VertexShaderInvocation) {
         Reload(true, data);
     } else {
         // No vertex data is retrievable => invalidate currently stored vertex data
@@ -491,13 +501,13 @@ void GraphicsVertexShaderWidget::Reload(bool replace_vertex_data, void* vertex_d
     info.labels.insert({ entry_point, "main" });
 
     // Generate debug information
-    debug_data = Pica::Shader::ProduceDebugInfo(input_vertex, num_attributes, shader_config, shader_setup);
+    debug_data = Pica::g_state.vs.ProduceDebugInfo(input_vertex, num_attributes, shader_config, shader_setup);
 
     // Reload widget state
     for (int attr = 0; attr < num_attributes; ++attr) {
         unsigned source_attr = shader_config.input_register_map.GetRegisterForAttribute(attr);
-        input_data_mapping[source_attr]->setText(QString("-> v%1").arg(attr));
-        input_data_container[source_attr]->setVisible(true);
+        input_data_mapping[attr]->setText(QString("-> v%1").arg(source_attr));
+        input_data_container[attr]->setVisible(true);
     }
     // Only show input attributes which are used as input to the shader
     for (unsigned int attr = num_attributes; attr < 16; ++attr) {
@@ -505,7 +515,7 @@ void GraphicsVertexShaderWidget::Reload(bool replace_vertex_data, void* vertex_d
     }
 
     // Initialize debug info text for current cycle count
-    cycle_index->setMaximum(debug_data.records.size() - 1);
+    cycle_index->setMaximum(static_cast<int>(debug_data.records.size() - 1));
     OnCycleIndexChanged(cycle_index->value());
 
     model->endResetModel();

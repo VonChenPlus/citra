@@ -5,6 +5,8 @@ environment:
   BUILD_PASSWORD:
     secure: EXGNlWKJsCtbeImEJ5EP9qrxZ+EqUFfNy+CP61nDOMA=
 
+os: Visual Studio 2015
+
 platform:
   - x64
 
@@ -17,10 +19,17 @@ install:
 before_build:
   - mkdir build
   - cd build
-  - cmake -G "Visual Studio 14 Win64" -DCITRA_USE_BUNDLED_GLFW=1 -DCITRA_USE_BUNDLED_QT=1 ..
+  - cmake -G "Visual Studio 14 2015 Win64" -DCITRA_USE_BUNDLED_QT=1 -DCITRA_USE_BUNDLED_SDL2=1 ..
   - cd ..
 
-after_build:
+build:
+  project: build/citra.sln
+  parallel: true
+
+test_script:
+  - cd build && ctest -VV -C Release && cd ..
+
+on_success:
     # copying the needed QT Dlls is now done post build. See the CMakeLists.txt file in the citra-qt folder
   - ps: >
         if (!"$env:APPVEYOR_PULL_REQUEST_TITLE" -and ("$env:APPVEYOR_REPO_BRANCH" -eq "master"))
@@ -30,17 +39,15 @@ after_build:
             # Where are these spaces coming from? Regardless, let's remove them
             $BUILD_NAME = "citra-${GITDATE}-${GITREV}-windows-amd64.7z" -replace " ",""
             $BUILD_NAME_NOQT = "citra-noqt-${GITDATE}-${GITREV}-windows-amd64.7z" -replace " ",""
-            # Zip up the build folder
-            7z a $BUILD_NAME .\build\bin\release\*
-            # Do a second archive with only the binaries
-            7z a $BUILD_NAME_NOQT .\build\bin\release\*.exe
+            # Zip up the build folder and documentation
+            7z a $BUILD_NAME .\build\bin\release\* .\license.txt .\README.md
+            # Do a second archive with only the binaries (excludes dlls) and documentation
+            7z a $BUILD_NAME_NOQT .\build\bin\release\*.exe .\license.txt .\README.md
 
-            # Download winscp
-            Invoke-WebRequest "http://iweb.dl.sourceforge.net/project/winscp/WinSCP/5.7.3/winscp573.zip" -OutFile "winscp573.zip"
-            7z e -y winscp573.zip
 
-            # Upload to server
-            .\WinSCP.com /command `
+            # Download WinSCP and upload to server
+            choco install winscp.portable
+            WinSCP.exe /command `
                 "option batch abort" `
                 "option confirm off" `
                 "open sftp://citra-builds:${env:BUILD_PASSWORD}@builds.citra-emu.org -hostkey=*" `

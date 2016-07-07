@@ -34,6 +34,7 @@ namespace Log {
         SUB(Kernel, SVC) \
         CLS(Service) \
         SUB(Service, SRV) \
+        SUB(Service, FRD) \
         SUB(Service, FS) \
         SUB(Service, ERR) \
         SUB(Service, APT) \
@@ -42,13 +43,17 @@ namespace Log {
         SUB(Service, AM) \
         SUB(Service, PTM) \
         SUB(Service, LDR) \
+        SUB(Service, NDM) \
         SUB(Service, NIM) \
         SUB(Service, NWM) \
         SUB(Service, CAM) \
+        SUB(Service, CECD) \
         SUB(Service, CFG) \
         SUB(Service, DSP) \
+        SUB(Service, DLP) \
         SUB(Service, HID) \
         SUB(Service, SOC) \
+        SUB(Service, IR) \
         SUB(Service, Y2R) \
         CLS(HW) \
         SUB(HW, Memory) \
@@ -58,6 +63,9 @@ namespace Log {
         CLS(Render) \
         SUB(Render, Software) \
         SUB(Render, OpenGL) \
+        CLS(Audio) \
+        SUB(Audio, DSP) \
+        SUB(Audio, Sink) \
         CLS(Loader)
 
 // GetClassName is a macro defined by Windows.h, grrr...
@@ -109,7 +117,7 @@ Entry CreateEntry(Class log_class, Level log_level,
     vsnprintf(formatting_buffer.data(), formatting_buffer.size(), format, args);
     entry.message = std::string(formatting_buffer.data());
 
-    return std::move(entry);
+    return entry;
 }
 
 static Filter* filter = nullptr;

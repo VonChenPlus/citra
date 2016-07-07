@@ -3,12 +3,12 @@
 // Refer to the license.txt file included.
 
 #include <algorithm>
+#include <memory>
 #include <vector>
 
 #include "common/common_types.h"
 #include "common/file_util.h"
 #include "common/logging/log.h"
-#include "common/make_unique.h"
 #include "common/string_util.h"
 
 #include "core/file_sys/archive_savedatacheck.h"
@@ -44,15 +44,21 @@ ResultVal<std::unique_ptr<ArchiveBackend>> ArchiveFactory_SaveDataCheck::Open(co
     }
     auto size = file->GetSize();
 
-    auto archive = Common::make_unique<IVFCArchive>(file, 0, size);
+    auto archive = std::make_unique<IVFCArchive>(file, 0, size);
     return MakeResult<std::unique_ptr<ArchiveBackend>>(std::move(archive));
 }
 
-ResultCode ArchiveFactory_SaveDataCheck::Format(const Path& path) {
+ResultCode ArchiveFactory_SaveDataCheck::Format(const Path& path, const FileSys::ArchiveFormatInfo& format_info) {
     LOG_ERROR(Service_FS, "Attempted to format a SaveDataCheck archive.");
     // TODO: Verify error code
     return ResultCode(ErrorDescription::NotAuthorized, ErrorModule::FS,
         ErrorSummary::NotSupported, ErrorLevel::Permanent);
+}
+
+ResultVal<ArchiveFormatInfo> ArchiveFactory_SaveDataCheck::GetFormatInfo(const Path& path) const {
+    // TODO(Subv): Implement
+    LOG_ERROR(Service_FS, "Unimplemented GetFormatInfo archive %s", GetName().c_str());
+    return ResultCode(-1);
 }
 
 } // namespace FileSys

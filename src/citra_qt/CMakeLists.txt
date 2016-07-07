@@ -2,8 +2,6 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_INCLUDE_CURRENT_DIR ON)
 
 set(SRCS
-            config/controller_config.cpp
-            config/controller_config_util.cpp
             config.cpp
             debugger/callstack.cpp
             debugger/disassembler.cpp
@@ -11,25 +9,28 @@ set(SRCS
             debugger/graphics_breakpoint_observer.cpp
             debugger/graphics_breakpoints.cpp
             debugger/graphics_cmdlists.cpp
-            debugger/graphics_framebuffer.cpp
+            debugger/graphics_surface.cpp
             debugger/graphics_tracing.cpp
             debugger/graphics_vertex_shader.cpp
             debugger/profiler.cpp
             debugger/ramview.cpp
             debugger/registers.cpp
-            game_list.cpp
             util/spinbox.cpp
             util/util.cpp
             bootmanager.cpp
+            configure_audio.cpp
+            configure_debug.cpp
+            configure_dialog.cpp
+            configure_general.cpp
+            game_list.cpp
             hotkeys.cpp
             main.cpp
+            ui_settings.cpp
             citra-qt.rc
             Info.plist
             )
 
 set(HEADERS
-            config/controller_config.h
-            config/controller_config_util.h
             config.h
             debugger/callstack.h
             debugger/disassembler.h
@@ -38,27 +39,36 @@ set(HEADERS
             debugger/graphics_breakpoints.h
             debugger/graphics_breakpoints_p.h
             debugger/graphics_cmdlists.h
-            debugger/graphics_framebuffer.h
+            debugger/graphics_surface.h
             debugger/graphics_tracing.h
             debugger/graphics_vertex_shader.h
             debugger/profiler.h
             debugger/ramview.h
             debugger/registers.h
-            game_list.h
             util/spinbox.h
             util/util.h
             bootmanager.h
+            configure_audio.h
+            configure_debug.h
+            configure_dialog.h
+            configure_general.h
+            game_list.h
+            game_list_p.h
             hotkeys.h
             main.h
+            ui_settings.h
             version.h
             )
 
 set(UIS
-            config/controller_config.ui
             debugger/callstack.ui
             debugger/disassembler.ui
             debugger/profiler.ui
             debugger/registers.ui
+            configure.ui
+            configure_audio.ui
+            configure_debug.ui
+            configure_general.ui
             hotkeys.ui
             main.ui
             )
@@ -79,18 +89,23 @@ if (APPLE)
 else()
     add_executable(citra-qt ${SRCS} ${HEADERS} ${UI_HDRS})
 endif()
-target_link_libraries(citra-qt core video_core common qhexedit)
+target_link_libraries(citra-qt core video_core audio_core common qhexedit)
 target_link_libraries(citra-qt ${OPENGL_gl_LIBRARY} ${CITRA_QT_LIBS})
-target_link_libraries(citra-qt ${PLATFORM_LIBRARIES})
+target_link_libraries(citra-qt ${PLATFORM_LIBRARIES} Threads::Threads)
 
 if(${CMAKE_SYSTEM_NAME} MATCHES "Linux|FreeBSD|OpenBSD|NetBSD")
     install(TARGETS citra-qt RUNTIME DESTINATION "${CMAKE_INSTALL_PREFIX}/bin")
 endif()
 
 if (Qt5_FOUND AND MSVC)
+    include(WindowsCopyFiles)
+
     set(Qt5_DLL_DIR "${Qt5_DIR}/../../../bin")
     set(Qt5_PLATFORMS_DIR "${Qt5_DIR}/../../../plugins/platforms/")
-    set(Qt5_DLLS
+    set(DLL_DEST "${CMAKE_BINARY_DIR}/bin/$<CONFIG>/")
+    set(PLATFORMS ${DLL_DEST}platforms/)
+
+    windows_copy_files(citra-qt ${Qt5_DLL_DIR} ${DLL_DEST}
         icudt*.dll
         icuin*.dll
         icuuc*.dll
@@ -99,24 +114,8 @@ if (Qt5_FOUND AND MSVC)
         Qt5OpenGL$<$<CONFIG:Debug>:d>.*
         Qt5Widgets$<$<CONFIG:Debug>:d>.*
     )
-    set(DLL_DEST "${CMAKE_BINARY_DIR}/bin/$<CONFIG>/")
-    set(PLATFORMS ${DLL_DEST}platforms/)
+    windows_copy_files(citra-qt ${Qt5_PLATFORMS_DIR} ${PLATFORMS} qwindows$<$<CONFIG:Debug>:d>.*)
 
-    # windows commandline expects the / to be \ so switch them
-    string(REPLACE "/" "\\\\" Qt5_DLL_DIR ${Qt5_DLL_DIR})
-    string(REPLACE "/" "\\\\" Qt5_PLATFORMS_DIR ${Qt5_PLATFORMS_DIR})
-    string(REPLACE "/" "\\\\" DLL_DEST ${DLL_DEST})
-    string(REPLACE "/" "\\\\" PLATFORMS ${PLATFORMS})
-
-    # /NJH /NJS /NDL /NFL /NC /NS /NP - Silence any output
-    # cmake adds an extra check for command success which doesn't work too well with robocopy
-    # so trick it into thinking the command was successful with the || cmd /c "exit /b 0"
-    add_custom_command(TARGET citra-qt POST_BUILD
-        COMMAND robocopy ${Qt5_DLL_DIR} ${DLL_DEST} ${Qt5_DLLS} /NJH /NJS /NDL /NFL /NC /NS /NP || cmd /c "exit /b 0"
-        COMMAND if not exist ${PLATFORMS} mkdir ${PLATFORMS} 2> nul
-        COMMAND robocopy ${Qt5_PLATFORMS_DIR} ${PLATFORMS} qwindows$<$<CONFIG:Debug>:d>.* /NJH /NJS /NDL /NFL /NC /NS /NP || cmd /c "exit /b 0"
-    )
-    unset(Qt5_DLLS)
     unset(Qt5_DLL_DIR)
     unset(Qt5_PLATFORMS_DIR)
     unset(DLL_DEST)

@@ -5,9 +5,12 @@
 #pragma once
 
 #include <array>
-#include <cmath>
 #include <cstddef>
 #include <string>
+
+#ifndef _MSC_VER
+#include <type_traits> // for std::enable_if
+#endif
 
 #include "common/assert.h"
 #include "common/bit_field.h"
@@ -67,9 +70,9 @@ struct Regs {
     INSERT_PADDING_WORDS(0x9);
 
     BitField<0, 24, u32> viewport_depth_range; // float24
-    BitField<0, 24, u32> viewport_depth_far_plane; // float24
+    BitField<0, 24, u32> viewport_depth_near_plane; // float24
 
-    INSERT_PADDING_WORDS(0x1);
+    BitField<0, 3, u32> vs_output_total;
 
     union VSOutputAttributes {
         // Maps components of output vertex attributes to semantics
@@ -112,16 +115,59 @@ struct Regs {
         BitField<24, 5, Semantic> map_w;
     } vs_output_attributes[7];
 
-    INSERT_PADDING_WORDS(0x11);
+    INSERT_PADDING_WORDS(0xe);
+
+    enum class ScissorMode : u32 {
+        Disabled = 0,
+        Exclude = 1, // Exclude pixels inside the scissor box
+
+        Include = 3 // Exclude pixels outside the scissor box
+    };
+
+    struct {
+        BitField<0, 2, ScissorMode> mode;
+
+        union {
+            BitField< 0, 16, u32> x1;
+            BitField<16, 16, u32> y1;
+        };
+
+        union {
+            BitField< 0, 16, u32> x2;
+            BitField<16, 16, u32> y2;
+        };
+    } scissor_test;
 
     union {
-        BitField< 0, 16, u32> x;
-        BitField<16, 16, u32> y;
+        BitField< 0, 10, s32> x;
+        BitField<16, 10, s32> y;
     } viewport_corner;
 
-    INSERT_PADDING_WORDS(0x17);
+    INSERT_PADDING_WORDS(0x1);
+
+    //TODO: early depth
+    INSERT_PADDING_WORDS(0x1);
+
+    INSERT_PADDING_WORDS(0x2);
+
+    enum DepthBuffering : u32 {
+        WBuffering  = 0,
+        ZBuffering  = 1,
+    };
+    BitField< 0, 1, DepthBuffering> depthmap_enable;
+
+    INSERT_PADDING_WORDS(0x12);
 
     struct TextureConfig {
+        enum TextureType : u32 {
+            Texture2D    = 0,
+            TextureCube  = 1,
+            Shadow2D     = 2,
+            Projection2D = 3,
+            ShadowCube   = 4,
+            Disabled     = 5,
+        };
+
         enum WrapMode : u32 {
             ClampToEdge    = 0,
             ClampToBorder  = 1,
@@ -152,6 +198,7 @@ struct Regs {
             BitField< 2, 1, TextureFilter> min_filter;
             BitField< 8, 2, WrapMode> wrap_t;
             BitField<12, 2, WrapMode> wrap_s;
+            BitField<28, 2, TextureType> type; ///< @note Only valid for texture 0 according to 3DBrew.
         };
 
         INSERT_PADDING_WORDS(0x1);
@@ -239,7 +286,8 @@ struct Regs {
     TextureConfig texture0;
     INSERT_PADDING_WORDS(0x8);
     BitField<0, 4, TextureFormat> texture0_format;
-    INSERT_PADDING_WORDS(0x2);
+    BitField<0, 1, u32> fragment_lighting_enable;
+    INSERT_PADDING_WORDS(0x1);
     TextureConfig texture1;
     BitField<0, 4, TextureFormat> texture1_format;
     INSERT_PADDING_WORDS(0x2);
@@ -374,22 +422,47 @@ struct Regs {
     TevStageConfig tev_stage3;
     INSERT_PADDING_WORDS(0x3);
 
+    enum class FogMode : u32 {
+        None = 0,
+        Fog  = 5,
+        Gas  = 7,
+    };
+
     union {
-        // Tev stages 0-3 write their output to the combiner buffer if the corresponding bit in
-        // these masks are set
-        BitField< 8, 4, u32> update_mask_rgb;
-        BitField<12, 4, u32> update_mask_a;
+        BitField<0, 3, FogMode> fog_mode;
+        BitField<16, 1, u32> fog_flip;
 
-        bool TevStageUpdatesCombinerBufferColor(unsigned stage_index) const {
-            return (stage_index < 4) && (update_mask_rgb & (1 << stage_index));
-        }
+        union {
+            // Tev stages 0-3 write their output to the combiner buffer if the corresponding bit in
+            // these masks are set
+            BitField< 8, 4, u32> update_mask_rgb;
+            BitField<12, 4, u32> update_mask_a;
 
-        bool TevStageUpdatesCombinerBufferAlpha(unsigned stage_index) const {
-            return (stage_index < 4) && (update_mask_a & (1 << stage_index));
-        }
-    } tev_combiner_buffer_input;
+            bool TevStageUpdatesCombinerBufferColor(unsigned stage_index) const {
+                return (stage_index < 4) && (update_mask_rgb & (1 << stage_index));
+            }
 
-    INSERT_PADDING_WORDS(0xf);
+            bool TevStageUpdatesCombinerBufferAlpha(unsigned stage_index) const {
+                return (stage_index < 4) && (update_mask_a & (1 << stage_index));
+            }
+        } tev_combiner_buffer_input;
+    };
+
+    union {
+        u32 raw;
+        BitField< 0, 8, u32> r;
+        BitField< 8, 8, u32> g;
+        BitField<16, 8, u32> b;
+    } fog_color;
+
+    INSERT_PADDING_WORDS(0x4);
+
+    BitField<0, 16, u32> fog_lut_offset;
+
+    INSERT_PADDING_WORDS(0x1);
+
+    u32 fog_lut_data[8];
+
     TevStageConfig tev_stage4;
     INSERT_PADDING_WORDS(0x3);
     TevStageConfig tev_stage5;
@@ -574,8 +647,18 @@ struct Regs {
         }
     }
 
-    struct {
-        INSERT_PADDING_WORDS(0x6);
+    struct FramebufferConfig {
+        INSERT_PADDING_WORDS(0x3);
+
+        union {
+            BitField<0, 4, u32> allow_color_write; // 0 = disable, else enable
+        };
+
+        INSERT_PADDING_WORDS(0x1);
+
+        union {
+            BitField<0, 2, u32> allow_depth_stencil_write; // 0 = disable, else enable
+        };
 
         DepthFormat depth_format; // TODO: Should be a BitField!
         BitField<16, 3, ColorFormat> color_format;
@@ -641,7 +724,271 @@ struct Regs {
         }
     }
 
-    INSERT_PADDING_WORDS(0xe0);
+    INSERT_PADDING_WORDS(0x20);
+
+    enum class LightingSampler {
+        Distribution0 = 0,
+        Distribution1 = 1,
+        Fresnel = 3,
+        ReflectBlue = 4,
+        ReflectGreen = 5,
+        ReflectRed = 6,
+        SpotlightAttenuation = 8,
+        DistanceAttenuation = 16,
+    };
+
+    /**
+     * Pica fragment lighting supports using different LUTs for each lighting component:
+     * Reflectance R, G, and B channels, distribution function for specular components 0 and 1,
+     * fresnel factor, and spotlight attenuation. Furthermore, which LUTs are used for each channel
+     * (or whether a channel is enabled at all) is specified by various pre-defined lighting
+     * configurations. With configurations that require more LUTs, more cycles are required on HW to
+     * perform lighting computations.
+     */
+    enum class LightingConfig {
+        Config0 = 0, ///< Reflect Red, Distribution 0, Spotlight
+        Config1 = 1, ///< Reflect Red, Fresnel, Spotlight
+        Config2 = 2, ///< Reflect Red, Distribution 0/1
+        Config3 = 3, ///< Distribution 0/1, Fresnel
+        Config4 = 4, ///< Reflect Red/Green/Blue, Distribution 0/1, Spotlight
+        Config5 = 5, ///< Reflect Red/Green/Blue, Distribution 0, Fresnel, Spotlight
+        Config6 = 6, ///< Reflect Red, Distribution 0/1, Fresnel, Spotlight
+        Config7 = 8, ///< Reflect Red/Green/Blue, Distribution 0/1, Fresnel, Spotlight
+                     ///< NOTE: '8' is intentional, '7' does not appear to be a valid configuration
+    };
+
+    /// Selects which lighting components are affected by fresnel
+    enum class LightingFresnelSelector {
+        None = 0,                             ///< Fresnel is disabled
+        PrimaryAlpha = 1,                     ///< Primary (diffuse) lighting alpha is affected by fresnel
+        SecondaryAlpha = 2,                   ///< Secondary (specular) lighting alpha is affected by fresnel
+        Both = PrimaryAlpha | SecondaryAlpha, ///< Both primary and secondary lighting alphas are affected by fresnel
+    };
+
+    /// Factor used to scale the output of a lighting LUT
+    enum class LightingScale {
+        Scale1 = 0,   ///< Scale is 1x
+        Scale2 = 1,   ///< Scale is 2x
+        Scale4 = 2,   ///< Scale is 4x
+        Scale8 = 3,   ///< Scale is 8x
+        Scale1_4 = 6, ///< Scale is 0.25x
+        Scale1_2 = 7, ///< Scale is 0.5x
+    };
+
+    enum class LightingLutInput {
+        NH = 0, // Cosine of the angle between the normal and half-angle vectors
+        VH = 1, // Cosine of the angle between the view and half-angle vectors
+        NV = 2, // Cosine of the angle between the normal and the view vector
+        LN = 3, // Cosine of the angle between the light and the normal vectors
+    };
+
+    enum class LightingBumpMode : u32 {
+        None = 0,
+        NormalMap = 1,
+        TangentMap = 2,
+    };
+
+    union LightColor {
+        BitField< 0, 10, u32> b;
+        BitField<10, 10, u32> g;
+        BitField<20, 10, u32> r;
+
+        Math::Vec3f ToVec3f() const {
+            // These fields are 10 bits wide, however 255 corresponds to 1.0f for each color component
+            return Math::MakeVec((f32)r / 255.f, (f32)g / 255.f, (f32)b / 255.f);
+        }
+    };
+
+    /// Returns true if the specified lighting sampler is supported by the current Pica lighting configuration
+    static bool IsLightingSamplerSupported(LightingConfig config, LightingSampler sampler) {
+        switch (sampler) {
+        case LightingSampler::Distribution0:
+            return (config != LightingConfig::Config1);
+
+        case LightingSampler::Distribution1:
+            return (config != LightingConfig::Config0) && (config != LightingConfig::Config1) && (config != LightingConfig::Config5);
+
+        case LightingSampler::Fresnel:
+            return (config != LightingConfig::Config0) && (config != LightingConfig::Config2) && (config != LightingConfig::Config4);
+
+        case LightingSampler::ReflectRed:
+            return (config != LightingConfig::Config3);
+
+        case LightingSampler::ReflectGreen:
+        case LightingSampler::ReflectBlue:
+            return (config == LightingConfig::Config4) || (config == LightingConfig::Config5) || (config == LightingConfig::Config7);
+        default:
+            UNREACHABLE_MSG("Regs::IsLightingSamplerSupported: Reached "
+                            "unreachable section, sampler should be one "
+                            "of Distribution0, Distribution1, Fresnel, "
+                            "ReflectRed, ReflectGreen or ReflectBlue, instead "
+                            "got %i", static_cast<int>(config));
+        }
+    }
+
+    struct {
+        struct LightSrc {
+            LightColor specular_0;  // material.specular_0 * light.specular_0
+            LightColor specular_1;  // material.specular_1 * light.specular_1
+            LightColor diffuse;     // material.diffuse * light.diffuse
+            LightColor ambient;     // material.ambient * light.ambient
+
+            // Encoded as 16-bit floating point
+            union {
+                BitField< 0, 16, u32> x;
+                BitField<16, 16, u32> y;
+            };
+            union {
+                BitField< 0, 16, u32> z;
+            };
+
+            INSERT_PADDING_WORDS(0x3);
+
+            union {
+                BitField<0, 1, u32> directional;
+                BitField<1, 1, u32> two_sided_diffuse; // When disabled, clamp dot-product to 0
+            } config;
+
+            BitField<0, 20, u32> dist_atten_bias;
+            BitField<0, 20, u32> dist_atten_scale;
+
+            INSERT_PADDING_WORDS(0x4);
+        };
+        static_assert(sizeof(LightSrc) == 0x10 * sizeof(u32), "LightSrc structure must be 0x10 words");
+
+        LightSrc light[8];
+        LightColor global_ambient; // Emission + (material.ambient * lighting.ambient)
+        INSERT_PADDING_WORDS(0x1);
+        BitField<0, 3, u32> num_lights; // Number of enabled lights - 1
+
+        union {
+            BitField< 2, 2, LightingFresnelSelector> fresnel_selector;
+            BitField< 4, 4, LightingConfig> config;
+            BitField<22, 2, u32> bump_selector; // 0: Texture 0, 1: Texture 1, 2: Texture 2
+            BitField<27, 1, u32> clamp_highlights;
+            BitField<28, 2, LightingBumpMode> bump_mode;
+            BitField<30, 1, u32> disable_bump_renorm;
+        } config0;
+
+        union {
+            BitField<16, 1, u32> disable_lut_d0;
+            BitField<17, 1, u32> disable_lut_d1;
+            BitField<19, 1, u32> disable_lut_fr;
+            BitField<20, 1, u32> disable_lut_rr;
+            BitField<21, 1, u32> disable_lut_rg;
+            BitField<22, 1, u32> disable_lut_rb;
+
+            // Each bit specifies whether distance attenuation should be applied for the
+            // corresponding light
+
+            BitField<24, 1, u32> disable_dist_atten_light_0;
+            BitField<25, 1, u32> disable_dist_atten_light_1;
+            BitField<26, 1, u32> disable_dist_atten_light_2;
+            BitField<27, 1, u32> disable_dist_atten_light_3;
+            BitField<28, 1, u32> disable_dist_atten_light_4;
+            BitField<29, 1, u32> disable_dist_atten_light_5;
+            BitField<30, 1, u32> disable_dist_atten_light_6;
+            BitField<31, 1, u32> disable_dist_atten_light_7;
+        } config1;
+
+        bool IsDistAttenDisabled(unsigned index) const {
+            const unsigned disable[] = { config1.disable_dist_atten_light_0, config1.disable_dist_atten_light_1,
+                                         config1.disable_dist_atten_light_2, config1.disable_dist_atten_light_3,
+                                         config1.disable_dist_atten_light_4, config1.disable_dist_atten_light_5,
+                                         config1.disable_dist_atten_light_6, config1.disable_dist_atten_light_7 };
+            return disable[index] != 0;
+        }
+
+        union {
+            BitField<0, 8, u32> index;      ///< Index at which to set data in the LUT
+            BitField<8, 5, u32> type;       ///< Type of LUT for which to set data
+        } lut_config;
+
+        BitField<0, 1, u32> disable;
+        INSERT_PADDING_WORDS(0x1);
+
+        // When data is written to any of these registers, it gets written to the lookup table of
+        // the selected type at the selected index, specified above in the `lut_config` register.
+        // With each write, `lut_config.index` is incremented. It does not matter which of these
+        // registers is written to, the behavior will be the same.
+        u32 lut_data[8];
+
+        // These are used to specify if absolute (abs) value should be used for each LUT index. When
+        // abs mode is disabled, LUT indexes are in the range of (-1.0, 1.0). Otherwise, they are in
+        // the range of (0.0, 1.0).
+        union {
+            BitField< 1, 1, u32> disable_d0;
+            BitField< 5, 1, u32> disable_d1;
+            BitField< 9, 1, u32> disable_sp;
+            BitField<13, 1, u32> disable_fr;
+            BitField<17, 1, u32> disable_rb;
+            BitField<21, 1, u32> disable_rg;
+            BitField<25, 1, u32> disable_rr;
+        } abs_lut_input;
+
+        union {
+            BitField< 0, 3, LightingLutInput> d0;
+            BitField< 4, 3, LightingLutInput> d1;
+            BitField< 8, 3, LightingLutInput> sp;
+            BitField<12, 3, LightingLutInput> fr;
+            BitField<16, 3, LightingLutInput> rb;
+            BitField<20, 3, LightingLutInput> rg;
+            BitField<24, 3, LightingLutInput> rr;
+        } lut_input;
+
+        union {
+            BitField< 0, 3, LightingScale> d0;
+            BitField< 4, 3, LightingScale> d1;
+            BitField< 8, 3, LightingScale> sp;
+            BitField<12, 3, LightingScale> fr;
+            BitField<16, 3, LightingScale> rb;
+            BitField<20, 3, LightingScale> rg;
+            BitField<24, 3, LightingScale> rr;
+
+            static float GetScale(LightingScale scale) {
+                switch (scale) {
+                case LightingScale::Scale1:
+                    return 1.0f;
+                case LightingScale::Scale2:
+                    return 2.0f;
+                case LightingScale::Scale4:
+                    return 4.0f;
+                case LightingScale::Scale8:
+                    return 8.0f;
+                case LightingScale::Scale1_4:
+                    return 0.25f;
+                case LightingScale::Scale1_2:
+                    return 0.5f;
+                }
+                return 0.0f;
+            }
+        } lut_scale;
+
+        INSERT_PADDING_WORDS(0x6);
+
+        union {
+            // There are 8 light enable "slots", corresponding to the total number of lights
+            // supported by Pica. For N enabled lights (specified by register 0x1c2, or 'src_num'
+            // above), the first N slots below will be set to integers within the range of 0-7,
+            // corresponding to the actual light that is enabled for each slot.
+
+            BitField< 0, 3, u32> slot_0;
+            BitField< 4, 3, u32> slot_1;
+            BitField< 8, 3, u32> slot_2;
+            BitField<12, 3, u32> slot_3;
+            BitField<16, 3, u32> slot_4;
+            BitField<20, 3, u32> slot_5;
+            BitField<24, 3, u32> slot_6;
+            BitField<28, 3, u32> slot_7;
+
+            unsigned GetNum(unsigned index) const {
+                const unsigned enable_slots[] = { slot_0, slot_1, slot_2, slot_3, slot_4, slot_5, slot_6, slot_7 };
+                return enable_slots[index];
+            }
+        } light_enable;
+    } lighting;
+
+    INSERT_PADDING_WORDS(0x26);
 
     enum class VertexAttributeFormat : u64 {
         BYTE = 0,
@@ -825,7 +1172,16 @@ struct Regs {
         }
     } command_buffer;
 
-    INSERT_PADDING_WORDS(0x20);
+    INSERT_PADDING_WORDS(0x07);
+
+    enum class GPUMode : u32 {
+        Drawing = 0,
+        Configuring = 1
+    };
+
+    GPUMode gpu_mode;
+
+    INSERT_PADDING_WORDS(0x18);
 
     enum class TriangleTopology : u32 {
         List   = 0,
@@ -850,7 +1206,12 @@ struct Regs {
             BitField<24, 8, u32> w;
         } int_uniforms[4];
 
-        INSERT_PADDING_WORDS(0x5);
+        INSERT_PADDING_WORDS(0x4);
+
+        union {
+            // Number of input attributes to shader unit - 1
+            BitField<0, 4, u32> num_input_attributes;
+        };
 
         // Offset to shader program entry point (in words)
         BitField<0, 16, u32> main_offset;
@@ -884,8 +1245,10 @@ struct Regs {
             }
         } input_register_map;
 
-        // OUTMAP_MASK, 0x28E, CODETRANSFER_END
-        INSERT_PADDING_WORDS(0x3);
+        BitField<0, 16, u32> output_mask;
+
+        // 0x28E, CODETRANSFER_END
+        INSERT_PADDING_WORDS(0x2);
 
         struct {
             enum Format : u32
@@ -948,17 +1311,17 @@ struct Regs {
     // Used for debugging purposes, so performance is not an issue here
     static std::string GetCommandName(int index);
 
-    static inline size_t NumIds() {
+    static constexpr size_t NumIds() {
         return sizeof(Regs) / sizeof(u32);
     }
 
-    u32& operator [] (int index) const {
-        u32* content = (u32*)this;
+    const u32& operator [] (int index) const {
+        const u32* content = reinterpret_cast<const u32*>(this);
         return content[index];
     }
 
     u32& operator [] (int index) {
-        u32* content = (u32*)this;
+        u32* content = reinterpret_cast<u32*>(this);
         return content[index];
     }
 
@@ -983,13 +1346,16 @@ ASSERT_REG_POSITION(cull_mode, 0x40);
 ASSERT_REG_POSITION(viewport_size_x, 0x41);
 ASSERT_REG_POSITION(viewport_size_y, 0x43);
 ASSERT_REG_POSITION(viewport_depth_range, 0x4d);
-ASSERT_REG_POSITION(viewport_depth_far_plane, 0x4e);
+ASSERT_REG_POSITION(viewport_depth_near_plane, 0x4e);
 ASSERT_REG_POSITION(vs_output_attributes[0], 0x50);
 ASSERT_REG_POSITION(vs_output_attributes[1], 0x51);
+ASSERT_REG_POSITION(scissor_test, 0x65);
 ASSERT_REG_POSITION(viewport_corner, 0x68);
+ASSERT_REG_POSITION(depthmap_enable, 0x6D);
 ASSERT_REG_POSITION(texture0_enable, 0x80);
 ASSERT_REG_POSITION(texture0, 0x81);
 ASSERT_REG_POSITION(texture0_format, 0x8e);
+ASSERT_REG_POSITION(fragment_lighting_enable, 0x8f);
 ASSERT_REG_POSITION(texture1, 0x91);
 ASSERT_REG_POSITION(texture1_format, 0x96);
 ASSERT_REG_POSITION(texture2, 0x99);
@@ -999,11 +1365,16 @@ ASSERT_REG_POSITION(tev_stage1, 0xc8);
 ASSERT_REG_POSITION(tev_stage2, 0xd0);
 ASSERT_REG_POSITION(tev_stage3, 0xd8);
 ASSERT_REG_POSITION(tev_combiner_buffer_input, 0xe0);
+ASSERT_REG_POSITION(fog_mode, 0xe0);
+ASSERT_REG_POSITION(fog_color, 0xe1);
+ASSERT_REG_POSITION(fog_lut_offset, 0xe6);
+ASSERT_REG_POSITION(fog_lut_data, 0xe8);
 ASSERT_REG_POSITION(tev_stage4, 0xf0);
 ASSERT_REG_POSITION(tev_stage5, 0xf8);
 ASSERT_REG_POSITION(tev_combiner_buffer_color, 0xfd);
 ASSERT_REG_POSITION(output_merger, 0x100);
 ASSERT_REG_POSITION(framebuffer, 0x110);
+ASSERT_REG_POSITION(lighting, 0x140);
 ASSERT_REG_POSITION(vertex_attributes, 0x200);
 ASSERT_REG_POSITION(index_array, 0x227);
 ASSERT_REG_POSITION(num_vertices, 0x228);
@@ -1012,6 +1383,7 @@ ASSERT_REG_POSITION(trigger_draw, 0x22e);
 ASSERT_REG_POSITION(trigger_draw_indexed, 0x22f);
 ASSERT_REG_POSITION(vs_default_attributes_setup, 0x232);
 ASSERT_REG_POSITION(command_buffer, 0x238);
+ASSERT_REG_POSITION(gpu_mode, 0x245);
 ASSERT_REG_POSITION(triangle_topology, 0x25e);
 ASSERT_REG_POSITION(restart_primitive, 0x25f);
 ASSERT_REG_POSITION(gs, 0x280);
@@ -1026,157 +1398,10 @@ static_assert(sizeof(Regs::ShaderConfig) == 0x30 * sizeof(u32), "ShaderConfig st
 static_assert(sizeof(Regs) <= 0x300 * sizeof(u32), "Register set structure larger than it should be");
 static_assert(sizeof(Regs) >= 0x300 * sizeof(u32), "Register set structure smaller than it should be");
 
-struct float24 {
-    static float24 FromFloat32(float val) {
-        float24 ret;
-        ret.value = val;
-        return ret;
-    }
-
-    // 16 bit mantissa, 7 bit exponent, 1 bit sign
-    // TODO: No idea if this works as intended
-    static float24 FromRawFloat24(u32 hex) {
-        float24 ret;
-        if ((hex & 0xFFFFFF) == 0) {
-            ret.value = 0;
-        } else {
-            u32 mantissa = hex & 0xFFFF;
-            u32 exponent = (hex >> 16) & 0x7F;
-            u32 sign = hex >> 23;
-            ret.value = std::pow(2.0f, (float)exponent-63.0f) * (1.0f + mantissa * std::pow(2.0f, -16.f));
-            if (sign)
-                ret.value = -ret.value;
-        }
-        return ret;
-    }
-
-    static float24 Zero() {
-        return FromFloat32(0.f);
-    }
-
-    // Not recommended for anything but logging
-    float ToFloat32() const {
-        return value;
-    }
-
-    float24 operator * (const float24& flt) const {
-        if ((this->value == 0.f && !std::isnan(flt.value)) ||
-            (flt.value == 0.f && !std::isnan(this->value)))
-            // PICA gives 0 instead of NaN when multiplying by inf
-            return Zero();
-        return float24::FromFloat32(ToFloat32() * flt.ToFloat32());
-    }
-
-    float24 operator / (const float24& flt) const {
-        return float24::FromFloat32(ToFloat32() / flt.ToFloat32());
-    }
-
-    float24 operator + (const float24& flt) const {
-        return float24::FromFloat32(ToFloat32() + flt.ToFloat32());
-    }
-
-    float24 operator - (const float24& flt) const {
-        return float24::FromFloat32(ToFloat32() - flt.ToFloat32());
-    }
-
-    float24& operator *= (const float24& flt) {
-        if ((this->value == 0.f && !std::isnan(flt.value)) ||
-            (flt.value == 0.f && !std::isnan(this->value)))
-            // PICA gives 0 instead of NaN when multiplying by inf
-            *this = Zero();
-        else value *= flt.ToFloat32();
-        return *this;
-    }
-
-    float24& operator /= (const float24& flt) {
-        value /= flt.ToFloat32();
-        return *this;
-    }
-
-    float24& operator += (const float24& flt) {
-        value += flt.ToFloat32();
-        return *this;
-    }
-
-    float24& operator -= (const float24& flt) {
-        value -= flt.ToFloat32();
-        return *this;
-    }
-
-    float24 operator - () const {
-        return float24::FromFloat32(-ToFloat32());
-    }
-
-    bool operator < (const float24& flt) const {
-        return ToFloat32() < flt.ToFloat32();
-    }
-
-    bool operator > (const float24& flt) const {
-        return ToFloat32() > flt.ToFloat32();
-    }
-
-    bool operator >= (const float24& flt) const {
-        return ToFloat32() >= flt.ToFloat32();
-    }
-
-    bool operator <= (const float24& flt) const {
-        return ToFloat32() <= flt.ToFloat32();
-    }
-
-    bool operator == (const float24& flt) const {
-        return ToFloat32() == flt.ToFloat32();
-    }
-
-    bool operator != (const float24& flt) const {
-        return ToFloat32() != flt.ToFloat32();
-    }
-
-private:
-    // Stored as a regular float, merely for convenience
-    // TODO: Perform proper arithmetic on this!
-    float value;
-};
-static_assert(sizeof(float24) == sizeof(float), "Shader JIT assumes float24 is implemented as a 32-bit float");
-
-/// Struct used to describe current Pica state
-struct State {
-    /// Pica registers
-    Regs regs;
-
-    /// Vertex shader memory
-    struct ShaderSetup {
-        struct {
-            // The float uniforms are accessed by the shader JIT using SSE instructions, and are
-            // therefore required to be 16-byte aligned.
-            Math::Vec4<float24> MEMORY_ALIGNED16(f[96]);
-
-            std::array<bool, 16> b;
-            std::array<Math::Vec4<u8>, 4> i;
-        } uniforms;
-
-        Math::Vec4<float24> default_attributes[16];
-
-        std::array<u32, 1024> program_code;
-        std::array<u32, 1024> swizzle_data;
-    };
-
-    ShaderSetup vs;
-    ShaderSetup gs;
-
-    /// Current Pica command list
-    struct {
-        const u32* head_ptr;
-        const u32* current_ptr;
-        u32 length;
-    } cmd_list;
-};
-
 /// Initialize Pica state
 void Init();
 
 /// Shutdown Pica state
 void Shutdown();
-
-extern State g_state; ///< Current Pica state
 
 } // namespace

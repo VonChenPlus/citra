@@ -10,6 +10,7 @@
 #include "common/bit_field.h"
 #include "common/common_types.h"
 
+#include "core/hle/result.h"
 #include "core/hle/service/service.h"
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -194,7 +195,7 @@ public:
  */
 void SignalInterrupt(InterruptId interrupt_id);
 
-void SetBufferSwap(u32 screen_id, const FrameBufferInfo& info);
+ResultCode SetBufferSwap(u32 screen_id, const FrameBufferInfo& info);
 
 /**
  * Retrieves the framebuffer info stored in the GSP shared memory for the

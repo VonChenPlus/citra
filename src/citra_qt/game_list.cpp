@@ -8,6 +8,7 @@
 
 #include "game_list.h"
 #include "game_list_p.h"
+#include "ui_settings.h"
 
 #include "core/loader/loader.h"
 
@@ -33,8 +34,8 @@ GameList::GameList(QWidget* parent)
     tree_view->setUniformRowHeights(true);
 
     item_model->insertColumns(0, COLUMN_COUNT);
-    item_model->setHeaderData(COLUMN_FILE_TYPE, Qt::Horizontal, "File type");
     item_model->setHeaderData(COLUMN_NAME, Qt::Horizontal, "Name");
+    item_model->setHeaderData(COLUMN_FILE_TYPE, Qt::Horizontal, "File type");
     item_model->setHeaderData(COLUMN_SIZE, Qt::Horizontal, "Size");
 
     connect(tree_view, SIGNAL(activated(const QModelIndex&)), this, SLOT(ValidateEntry(const QModelIndex&)));
@@ -66,7 +67,7 @@ void GameList::ValidateEntry(const QModelIndex& item)
 
     if (file_path.isEmpty())
         return;
-    std::string std_file_path = file_path.toStdString();
+    std::string std_file_path(file_path.toStdString());
     if (!FileUtil::Exists(std_file_path) || FileUtil::IsDirectory(std_file_path))
         return;
     emit GameChosen(file_path);
@@ -100,57 +101,48 @@ void GameList::PopulateAsync(const QString& dir_path, bool deep_scan)
     current_worker = std::move(worker);
 }
 
-void GameList::SaveInterfaceLayout(QSettings& settings)
+void GameList::SaveInterfaceLayout()
 {
-    settings.beginGroup("UILayout");
-    settings.setValue("gameListHeaderState", tree_view->header()->saveState());
-    settings.endGroup();
+    UISettings::values.gamelist_header_state = tree_view->header()->saveState();
 }
 
-void GameList::LoadInterfaceLayout(QSettings& settings)
+void GameList::LoadInterfaceLayout()
 {
     auto header = tree_view->header();
-    settings.beginGroup("UILayout");
-    header->restoreState(settings.value("gameListHeaderState").toByteArray());
-    settings.endGroup();
+    if (!header->restoreState(UISettings::values.gamelist_header_state)) {
+        // We are using the name column to display icons and titles
+        // so make it as large as possible as default.
+        header->resizeSection(COLUMN_NAME, header->width());
+    }
 
     item_model->sort(header->sortIndicatorSection(), header->sortIndicatorOrder());
 }
 
-void GameListWorker::AddFstEntriesToGameList(const std::string& dir_path, bool deep_scan)
+void GameListWorker::AddFstEntriesToGameList(const std::string& dir_path, unsigned int recursion)
 {
-    const auto callback = [&](unsigned* num_entries_out,
-                              const std::string& directory,
-                              const std::string& virtual_name) -> bool {
-
+    const auto callback = [this, recursion](unsigned* num_entries_out,
+                                            const std::string& directory,
+                                            const std::string& virtual_name) -> bool {
         std::string physical_name = directory + DIR_SEP + virtual_name;
 
         if (stop_processing)
             return false; // Breaks the callback loop.
 
-        if (deep_scan && FileUtil::IsDirectory(physical_name)) {
-            AddFstEntriesToGameList(physical_name, true);
-        } else {
-            std::string filename_filename, filename_extension;
-            Common::SplitPath(physical_name, nullptr, &filename_filename, &filename_extension);
+        if (!FileUtil::IsDirectory(physical_name)) {
+            std::unique_ptr<Loader::AppLoader> loader = Loader::GetLoader(physical_name);
+            if (!loader)
+                return true;
 
-            Loader::FileType guessed_filetype = Loader::GuessFromExtension(filename_extension);
-            if (guessed_filetype == Loader::FileType::Unknown)
-                return true;
-            Loader::FileType filetype = Loader::IdentifyFile(physical_name);
-            if (filetype == Loader::FileType::Unknown) {
-                LOG_WARNING(Frontend, "File %s is of indeterminate type and is possibly corrupted.", physical_name.c_str());
-                return true;
-            }
-            if (guessed_filetype != filetype) {
-                LOG_WARNING(Frontend, "Filetype and extension of file %s do not match.", physical_name.c_str());
-            }
+            std::vector<u8> smdh;
+            loader->ReadIcon(smdh);
 
             emit EntryReady({
-                new GameListItem(QString::fromStdString(Loader::GetFileTypeString(filetype))),
-                new GameListItemPath(QString::fromStdString(physical_name)),
+                new GameListItemPath(QString::fromStdString(physical_name), smdh),
+                new GameListItem(QString::fromStdString(Loader::GetFileTypeString(loader->GetFileType()))),
                 new GameListItemSize(FileUtil::GetSize(physical_name)),
             });
+        } else if (recursion > 0) {
+            AddFstEntriesToGameList(physical_name, recursion - 1);
         }
 
         return true;
@@ -162,7 +154,7 @@ void GameListWorker::AddFstEntriesToGameList(const std::string& dir_path, bool d
 void GameListWorker::run()
 {
     stop_processing = false;
-    AddFstEntriesToGameList(dir_path.toStdString(), deep_scan);
+    AddFstEntriesToGameList(dir_path.toStdString(), deep_scan ? 256 : 0);
     emit Finished();
 }
 

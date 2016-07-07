@@ -2,9 +2,6 @@
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
-
-#include "common/file_util.h"
-
 #include "core/hle/service/apt/apt.h"
 #include "core/hle/service/apt/apt_u.h"
 
@@ -17,7 +14,7 @@ const Interface::FunctionInfo FunctionTable[] = {
     {0x00030040, Enable,                          "Enable"},
     {0x00040040, nullptr,                         "Finalize"},
     {0x00050040, GetAppletManInfo,                "GetAppletManInfo"},
-    {0x00060040, nullptr,                         "GetAppletInfo"},
+    {0x00060040, GetAppletInfo,                   "GetAppletInfo"},
     {0x00070000, nullptr,                         "GetLastSignaledAppletId"},
     {0x00080000, nullptr,                         "CountRegisteredApplet"},
     {0x00090040, IsRegistered,                    "IsRegistered"},
@@ -32,7 +29,7 @@ const Interface::FunctionInfo FunctionTable[] = {
     {0x00120040, nullptr,                         "SetHomeMenuAppletIdForDebug"},
     {0x00130000, nullptr,                         "GetPreparationState"},
     {0x00140040, nullptr,                         "SetPreparationState"},
-    {0x00150140, nullptr,                         "PrepareToStartApplication"},
+    {0x00150140, PrepareToStartApplication,       "PrepareToStartApplication"},
     {0x00160040, PreloadLibraryApplet,            "PreloadLibraryApplet"},
     {0x00170040, nullptr,                         "FinishPreloadingLibraryApplet"},
     {0x00180040, PrepareToStartLibraryApplet,     "PrepareToStartLibraryApplet"},
@@ -92,6 +89,14 @@ const Interface::FunctionInfo FunctionTable[] = {
     {0x004E0000, nullptr,                         "HardwareResetAsync"},
     {0x004F0080, SetAppCpuTimeLimit,              "SetAppCpuTimeLimit"},
     {0x00500040, GetAppCpuTimeLimit,              "GetAppCpuTimeLimit"},
+    {0x00510080, GetStartupArgument,              "GetStartupArgument"},
+    {0x00520104, nullptr,                         "Wrap1"},
+    {0x00530104, nullptr,                         "Unwrap1"},
+    {0x00550040, SetNSStateField,                 "SetNSStateField?"},
+    {0x00560000, GetNSStateField,                 "GetNSStateField?"},
+    {0x00580002, nullptr,                         "GetProgramID"},
+    {0x01010000, CheckNew3DSApp,                  "CheckNew3DSApp"},
+    {0x01020000, CheckNew3DS,                     "CheckNew3DS"}
 };
 
 APT_U_Interface::APT_U_Interface() {

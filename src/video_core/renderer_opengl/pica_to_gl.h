@@ -4,11 +4,22 @@
 
 #pragma once
 
+#include <array>
+#include <cstddef>
+
 #include <glad/glad.h>
 
+#include "common/assert.h"
+#include "common/bit_field.h"
+#include "common/common_funcs.h"
 #include "common/common_types.h"
+#include "common/logging/log.h"
 
 #include "video_core/pica.h"
+
+using GLvec2 = std::array<GLfloat, 2>;
+using GLvec3 = std::array<GLfloat, 3>;
+using GLvec4 = std::array<GLfloat, 4>;
 
 namespace PicaToGL {
 
@@ -19,7 +30,7 @@ inline GLenum TextureFilterMode(Pica::Regs::TextureConfig::TextureFilter mode) {
     };
 
     // Range check table for input
-    if (mode >= ARRAY_SIZE(filter_mode_table)) {
+    if (static_cast<size_t>(mode) >= ARRAY_SIZE(filter_mode_table)) {
         LOG_CRITICAL(Render_OpenGL, "Unknown texture filtering mode %d", mode);
         UNREACHABLE();
 
@@ -48,7 +59,7 @@ inline GLenum WrapMode(Pica::Regs::TextureConfig::WrapMode mode) {
     };
 
     // Range check table for input
-    if (mode >= ARRAY_SIZE(wrap_mode_table)) {
+    if (static_cast<size_t>(mode) >= ARRAY_SIZE(wrap_mode_table)) {
         LOG_CRITICAL(Render_OpenGL, "Unknown texture wrap mode %d", mode);
         UNREACHABLE();
 
@@ -66,6 +77,26 @@ inline GLenum WrapMode(Pica::Regs::TextureConfig::WrapMode mode) {
     }
 
     return gl_mode;
+}
+
+inline GLenum BlendEquation(Pica::Regs::BlendEquation equation) {
+    static const GLenum blend_equation_table[] = {
+        GL_FUNC_ADD,              // BlendEquation::Add
+        GL_FUNC_SUBTRACT,         // BlendEquation::Subtract
+        GL_FUNC_REVERSE_SUBTRACT, // BlendEquation::ReverseSubtract
+        GL_MIN,                   // BlendEquation::Min
+        GL_MAX,                   // BlendEquation::Max
+    };
+
+    // Range check table for input
+    if (static_cast<size_t>(equation) >= ARRAY_SIZE(blend_equation_table)) {
+        LOG_CRITICAL(Render_OpenGL, "Unknown blend equation %d", equation);
+        UNREACHABLE();
+
+        return GL_FUNC_ADD;
+    }
+
+    return blend_equation_table[(unsigned)equation];
 }
 
 inline GLenum BlendFunc(Pica::Regs::BlendFactor factor) {
@@ -88,7 +119,7 @@ inline GLenum BlendFunc(Pica::Regs::BlendFactor factor) {
     };
 
     // Range check table for input
-    if ((unsigned)factor >= ARRAY_SIZE(blend_func_table)) {
+    if (static_cast<size_t>(factor) >= ARRAY_SIZE(blend_func_table)) {
         LOG_CRITICAL(Render_OpenGL, "Unknown blend factor %d", factor);
         UNREACHABLE();
 
@@ -119,7 +150,7 @@ inline GLenum LogicOp(Pica::Regs::LogicOp op) {
     };
 
     // Range check table for input
-    if ((unsigned)op >= ARRAY_SIZE(logic_op_table)) {
+    if (static_cast<size_t>(op) >= ARRAY_SIZE(logic_op_table)) {
         LOG_CRITICAL(Render_OpenGL, "Unknown logic op %d", op);
         UNREACHABLE();
 
@@ -142,7 +173,7 @@ inline GLenum CompareFunc(Pica::Regs::CompareFunc func) {
     };
 
     // Range check table for input
-    if ((unsigned)func >= ARRAY_SIZE(compare_func_table)) {
+    if (static_cast<size_t>(func) >= ARRAY_SIZE(compare_func_table)) {
         LOG_CRITICAL(Render_OpenGL, "Unknown compare function %d", func);
         UNREACHABLE();
 
@@ -165,7 +196,7 @@ inline GLenum StencilOp(Pica::Regs::StencilAction action) {
     };
 
     // Range check table for input
-    if ((unsigned)action >= ARRAY_SIZE(stencil_op_table)) {
+    if (static_cast<size_t>(action) >= ARRAY_SIZE(stencil_op_table)) {
         LOG_CRITICAL(Render_OpenGL, "Unknown stencil op %d", action);
         UNREACHABLE();
 
@@ -175,11 +206,18 @@ inline GLenum StencilOp(Pica::Regs::StencilAction action) {
     return stencil_op_table[(unsigned)action];
 }
 
-inline std::array<GLfloat, 4> ColorRGBA8(const u32 color) {
+inline GLvec4 ColorRGBA8(const u32 color) {
     return { { (color >>  0 & 0xFF) / 255.0f,
                (color >>  8 & 0xFF) / 255.0f,
                (color >> 16 & 0xFF) / 255.0f,
                (color >> 24 & 0xFF) / 255.0f
+           } };
+}
+
+inline std::array<GLfloat, 3> LightColor(const Pica::Regs::LightColor& color) {
+    return { { color.r / 255.0f,
+               color.g / 255.0f,
+               color.b / 255.0f
            } };
 }
 

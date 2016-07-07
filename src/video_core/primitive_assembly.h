@@ -20,7 +20,7 @@ struct PrimitiveAssembler {
                                                VertexType& v1,
                                                VertexType& v2)>;
 
-    PrimitiveAssembler(Regs::TriangleTopology topology);
+    PrimitiveAssembler(Regs::TriangleTopology topology = Regs::TriangleTopology::List);
 
     /*
      * Queues a vertex, builds primitives from the vertex queue according to the given
@@ -29,6 +29,16 @@ struct PrimitiveAssembler {
      * keep event and handler code next to each other.
      */
     void SubmitVertex(VertexType& vtx, TriangleHandler triangle_handler);
+
+    /**
+     * Resets the internal state of the PrimitiveAssembler.
+     */
+    void Reset();
+
+    /**
+     * Reconfigures the PrimitiveAssembler to use a different triangle topology.
+     */
+    void Reconfigure(Regs::TriangleTopology topology);
 
 private:
     Regs::TriangleTopology topology;

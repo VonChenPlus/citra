@@ -10,6 +10,7 @@
 
 #include "ui_main.h"
 
+class Config;
 class GameList;
 class GImageInfo;
 class GRenderWindow;
@@ -59,6 +60,8 @@ signals:
     void EmulationStopping();
 
 private:
+    bool InitializeSystem();
+    bool LoadROM(const std::string& filename);
     void BootGame(const std::string& filename);
     void ShutdownGame();
 
@@ -73,7 +76,7 @@ private:
      *
      * @param filename the filename to store
      */
-    void StoreRecentFile(const QString& filename);
+    void StoreRecentFile(const std::string& filename);
 
     /**
      * Updates the recent files menu.
@@ -82,6 +85,13 @@ private:
      */
     void UpdateRecentFiles();
 
+    /**
+     * If the emulation is running,
+     * asks the user if he really want to close the emulator
+     *
+     * @return true if the user confirmed
+     */
+    bool ConfirmClose();
     void closeEvent(QCloseEvent* event) override;
 
 private slots:
@@ -95,19 +105,18 @@ private slots:
     /// Called whenever a user selects the "File->Select Game List Root" menu item
     void OnMenuSelectGameListRoot();
     void OnMenuRecentFile();
-    void OnOpenHotkeysDialog();
     void OnConfigure();
     void OnDisplayTitleBars(bool);
-    void SetHardwareRendererEnabled(bool);
-    void SetGdbstubEnabled(bool);
-    void SetShaderJITEnabled(bool);
     void ToggleWindowMode();
+    void OnCreateGraphicsSurfaceViewer();
 
 private:
     Ui::MainWindow ui;
 
     GRenderWindow* render_window;
     GameList* game_list;
+
+    std::unique_ptr<Config> config;
 
     // Whether emulation is currently running in Citra.
     bool emulation_running = false;

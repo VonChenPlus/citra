@@ -4,6 +4,10 @@
 
 #pragma once
 
+#if !defined(ARCHITECTURE_x86_64) && !defined(_M_ARM)
+#include <cstdlib> // for exit
+#endif
+
 #include "common_types.h"
 
 #define ARRAY_SIZE(a) (sizeof(a) / sizeof(a[0]))
@@ -18,19 +22,11 @@
 #define INSERT_PADDING_BYTES(num_bytes) u8 CONCAT2(pad, __LINE__)[(num_bytes)]
 #define INSERT_PADDING_WORDS(num_words) u32 CONCAT2(pad, __LINE__)[(num_words)]
 
+// Inlining
 #ifdef _WIN32
-    // Alignment
     #define FORCE_INLINE __forceinline
-    #define MEMORY_ALIGNED16(x) __declspec(align(16)) x
-    #define MEMORY_ALIGNED32(x) __declspec(align(32)) x
-    #define MEMORY_ALIGNED64(x) __declspec(align(64)) x
-    #define MEMORY_ALIGNED128(x) __declspec(align(128)) x
 #else
     #define FORCE_INLINE inline __attribute__((always_inline))
-    #define MEMORY_ALIGNED16(x) __attribute__((aligned(16))) x
-    #define MEMORY_ALIGNED32(x) __attribute__((aligned(32))) x
-    #define MEMORY_ALIGNED64(x) __attribute__((aligned(64))) x
-    #define MEMORY_ALIGNED128(x) __attribute__((aligned(128))) x
 #endif
 
 #ifndef _MSC_VER
@@ -76,18 +72,24 @@ inline u64 _rotr64(u64 x, unsigned int shift){
 }
 
 #else // _MSC_VER
-    #if (_MSC_VER < 1900)
-        // Function Cross-Compatibility
-        #define snprintf _snprintf
-    #endif
 
-    // Locale Cross-Compatibility
-    #define locale_t _locale_t
+#if (_MSC_VER < 1900)
+    // Function Cross-Compatibility
+    #define snprintf _snprintf
+#endif
 
-    extern "C" {
-        __declspec(dllimport) void __stdcall DebugBreak(void);
-    }
-    #define Crash() {DebugBreak();}
+// Locale Cross-Compatibility
+#define locale_t _locale_t
+
+extern "C" {
+    __declspec(dllimport) void __stdcall DebugBreak(void);
+}
+#define Crash() {DebugBreak();}
+
+// cstdlib provides these on MSVC
+#define rotr _rotr
+#define rotl _rotl
+
 #endif // _MSC_VER ndef
 
 // Generic function to get last error message.

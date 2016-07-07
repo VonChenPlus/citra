@@ -9,13 +9,16 @@
 #include "citra_qt/debugger/profiler.h"
 #include "citra_qt/util/util.h"
 
+#include "common/common_types.h"
 #include "common/microprofile.h"
 #include "common/profiler_reporting.h"
 
 // Include the implementation of the UI in this file. This isn't in microprofile.cpp because the
 // non-Qt frontends don't need it (and don't implement the UI drawing hooks either).
+#if MICROPROFILE_ENABLED
 #define MICROPROFILEUI_IMPL 1
 #include "common/microprofileui.h"
+#endif
 
 using namespace Common::Profiling;
 
@@ -34,21 +37,9 @@ static QVariant GetDataForColumn(int col, const AggregatedDuration& duration)
     }
 }
 
-static const TimingCategoryInfo* GetCategoryInfo(int id)
-{
-    const auto& categories = GetProfilingManager().GetTimingCategoriesInfo();
-    if ((size_t)id >= categories.size()) {
-        return nullptr;
-    } else {
-        return &categories[id];
-    }
-}
-
 ProfilerModel::ProfilerModel(QObject* parent) : QAbstractItemModel(parent)
 {
     updateProfilingInfo();
-    const auto& categories = GetProfilingManager().GetTimingCategoriesInfo();
-    results.time_per_category.resize(categories.size());
 }
 
 QVariant ProfilerModel::headerData(int section, Qt::Orientation orientation, int role) const
@@ -85,7 +76,7 @@ int ProfilerModel::rowCount(const QModelIndex& parent) const
     if (parent.isValid()) {
         return 0;
     } else {
-        return static_cast<int>(results.time_per_category.size() + 2);
+        return 2;
     }
 }
 
@@ -103,17 +94,6 @@ QVariant ProfilerModel::data(const QModelIndex& index, int role) const
                 return tr("Frame (with swapping)");
             } else {
                 return GetDataForColumn(index.column(), results.interframe_time);
-            }
-        } else {
-            if (index.column() == 0) {
-                const TimingCategoryInfo* info = GetCategoryInfo(index.row() - 2);
-                return info != nullptr ? QString(info->name) : QVariant();
-            } else {
-                if (index.row() - 2 < (int)results.time_per_category.size()) {
-                    return GetDataForColumn(index.column(), results.time_per_category[index.row() - 2]);
-                } else {
-                    return QVariant();
-                }
             }
         }
     }
@@ -148,6 +128,8 @@ void ProfilerWidget::setProfilingInfoUpdateEnabled(bool enable)
     }
 }
 
+#if MICROPROFILE_ENABLED
+
 class MicroProfileWidget : public QWidget {
 public:
     MicroProfileWidget(QWidget* parent = nullptr);
@@ -169,7 +151,11 @@ private:
     /// This timer is used to redraw the widget's contents continuously. To save resources, it only
     /// runs while the widget is visible.
     QTimer update_timer;
+    /// Scale the coordinate system appropriately when dpi != 96.
+    qreal x_scale = 1.0, y_scale = 1.0;
 };
+
+#endif
 
 MicroProfileDialog::MicroProfileDialog(QWidget* parent)
     : QWidget(parent, Qt::Dialog)
@@ -179,6 +165,8 @@ MicroProfileDialog::MicroProfileDialog(QWidget* parent)
     resize(1000, 600);
     // Remove the "?" button from the titlebar and enable the maximize button
     setWindowFlags(windowFlags() & ~Qt::WindowContextHelpButtonHint | Qt::WindowMaximizeButtonHint);
+
+#if MICROPROFILE_ENABLED
 
     MicroProfileWidget* widget = new MicroProfileWidget(this);
 
@@ -191,6 +179,7 @@ MicroProfileDialog::MicroProfileDialog(QWidget* parent)
     setFocusProxy(widget);
     widget->setFocusPolicy(Qt::StrongFocus);
     widget->setFocus();
+#endif
 }
 
 QAction* MicroProfileDialog::toggleViewAction() {
@@ -218,6 +207,9 @@ void MicroProfileDialog::hideEvent(QHideEvent* ev) {
     QWidget::hideEvent(ev);
 }
 
+
+#if MICROPROFILE_ENABLED
+
 /// There's no way to pass a user pointer to MicroProfile, so this variable is used to make the
 /// QPainter available inside the drawing callbacks.
 static QPainter* mp_painter = nullptr;
@@ -235,6 +227,11 @@ MicroProfileWidget::MicroProfileWidget(QWidget* parent) : QWidget(parent) {
 void MicroProfileWidget::paintEvent(QPaintEvent* ev) {
     QPainter painter(this);
 
+    // The units used by Microprofile for drawing are based in pixels on a 96 dpi display.
+    x_scale = qreal(painter.device()->logicalDpiX()) / 96.0;
+    y_scale = qreal(painter.device()->logicalDpiY()) / 96.0;
+    painter.scale(x_scale, y_scale);
+
     painter.setBackground(Qt::black);
     painter.eraseRect(rect());
 
@@ -243,7 +240,7 @@ void MicroProfileWidget::paintEvent(QPaintEvent* ev) {
     painter.setFont(font);
 
     mp_painter = &painter;
-    MicroProfileDraw(rect().width(), rect().height());
+    MicroProfileDraw(rect().width() / x_scale, rect().height() / y_scale);
     mp_painter = nullptr;
 }
 
@@ -258,24 +255,24 @@ void MicroProfileWidget::hideEvent(QHideEvent* ev) {
 }
 
 void MicroProfileWidget::mouseMoveEvent(QMouseEvent* ev) {
-    MicroProfileMousePosition(ev->x(), ev->y(), 0);
+    MicroProfileMousePosition(ev->x() / x_scale, ev->y() / y_scale, 0);
     ev->accept();
 }
 
 void MicroProfileWidget::mousePressEvent(QMouseEvent* ev) {
-    MicroProfileMousePosition(ev->x(), ev->y(), 0);
+    MicroProfileMousePosition(ev->x() / x_scale, ev->y() / y_scale, 0);
     MicroProfileMouseButton(ev->buttons() & Qt::LeftButton, ev->buttons() & Qt::RightButton);
     ev->accept();
 }
 
 void MicroProfileWidget::mouseReleaseEvent(QMouseEvent* ev) {
-    MicroProfileMousePosition(ev->x(), ev->y(), 0);
+    MicroProfileMousePosition(ev->x() / x_scale, ev->y() / y_scale, 0);
     MicroProfileMouseButton(ev->buttons() & Qt::LeftButton, ev->buttons() & Qt::RightButton);
     ev->accept();
 }
 
 void MicroProfileWidget::wheelEvent(QWheelEvent* ev) {
-    MicroProfileMousePosition(ev->x(), ev->y(), ev->delta() / 120);
+    MicroProfileMousePosition(ev->x() / x_scale, ev->y() / y_scale, ev->delta() / 120);
     ev->accept();
 }
 
@@ -337,3 +334,4 @@ void MicroProfileDrawLine2D(u32 vertices_length, float* vertices, u32 hex_color)
     mp_painter->drawPolyline(point_buf.data(), vertices_length);
     point_buf.clear();
 }
+#endif

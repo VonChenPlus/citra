@@ -2,6 +2,8 @@
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
+#include <cmath>
+
 #include "common/logging/log.h"
 #include "common/emu_window.h"
 
@@ -13,14 +15,11 @@
 #include "core/core_timing.h"
 #include "core/hle/kernel/event.h"
 #include "core/hle/kernel/shared_memory.h"
-#include "core/hle/hle.h"
 
 #include "video_core/video_core.h"
 
 namespace Service {
 namespace HID {
-
-static const int MAX_CIRCLEPAD_POS = 0x9C; ///< Max value for a circle pad position
 
 // Handle to shared memory region designated to HID_User service
 static Kernel::SharedPtr<Kernel::SharedMemory> shared_mem;
@@ -34,42 +33,57 @@ static Kernel::SharedPtr<Kernel::Event> event_debug_pad;
 
 static u32 next_pad_index;
 static u32 next_touch_index;
+static u32 next_accelerometer_index;
+static u32 next_gyroscope_index;
 
-const std::array<Service::HID::PadState, Settings::NativeInput::NUM_INPUTS> pad_mapping = {{
-    Service::HID::PAD_A, Service::HID::PAD_B, Service::HID::PAD_X, Service::HID::PAD_Y,
-    Service::HID::PAD_L, Service::HID::PAD_R, Service::HID::PAD_ZL, Service::HID::PAD_ZR,
-    Service::HID::PAD_START, Service::HID::PAD_SELECT, Service::HID::PAD_NONE,
-    Service::HID::PAD_UP, Service::HID::PAD_DOWN, Service::HID::PAD_LEFT, Service::HID::PAD_RIGHT,
-    Service::HID::PAD_CIRCLE_UP, Service::HID::PAD_CIRCLE_DOWN, Service::HID::PAD_CIRCLE_LEFT, Service::HID::PAD_CIRCLE_RIGHT,
-    Service::HID::PAD_C_UP, Service::HID::PAD_C_DOWN, Service::HID::PAD_C_LEFT, Service::HID::PAD_C_RIGHT
-}};
+static int enable_accelerometer_count = 0; // positive means enabled
+static int enable_gyroscope_count = 0; // positive means enabled
 
+static PadState GetCirclePadDirectionState(s16 circle_pad_x, s16 circle_pad_y) {
+    constexpr float TAN30 = 0.577350269, TAN60 = 1 / TAN30; // 30 degree and 60 degree are angular thresholds for directions
+    constexpr int CIRCLE_PAD_THRESHOLD_SQUARE = 40 * 40; // a circle pad radius greater than 40 will trigger circle pad direction
+    PadState state;
+    state.hex = 0;
 
-// TODO(peachum):
-// Add a method for setting analog input from joystick device for the circle Pad.
-//
-// This method should:
-//     * Be called after both PadButton<Press, Release>().
-//     * Be called before PadUpdateComplete()
-//     * Set current PadEntry.circle_pad_<axis> using analog data
-//     * Set PadData.raw_circle_pad_data
-//     * Set PadData.current_state.circle_right = 1 if current PadEntry.circle_pad_x >= 41
-//     * Set PadData.current_state.circle_up = 1 if current PadEntry.circle_pad_y >= 41
-//     * Set PadData.current_state.circle_left = 1 if current PadEntry.circle_pad_x <= -41
-//     * Set PadData.current_state.circle_right = 1 if current PadEntry.circle_pad_y <= -41
+    if (circle_pad_x * circle_pad_x + circle_pad_y * circle_pad_y > CIRCLE_PAD_THRESHOLD_SQUARE) {
+        float t = std::abs(static_cast<float>(circle_pad_y) / circle_pad_x);
+
+        if (circle_pad_x != 0 && t < TAN60) {
+            if (circle_pad_x > 0)
+                state.circle_right.Assign(1);
+            else
+                state.circle_left.Assign(1);
+        }
+
+        if (circle_pad_x == 0 || t > TAN30) {
+            if (circle_pad_y > 0)
+                state.circle_up.Assign(1);
+            else
+                state.circle_down.Assign(1);
+        }
+    }
+
+    return state;
+}
 
 void Update() {
     SharedMem* mem = reinterpret_cast<SharedMem*>(shared_mem->GetPointer());
-    const PadState state = VideoCore::g_emu_window->GetPadState();
 
     if (mem == nullptr) {
         LOG_DEBUG(Service_HID, "Cannot update HID prior to mapping shared memory!");
         return;
     }
 
+    PadState state = VideoCore::g_emu_window->GetPadState();
+
+    // Get current circle pad position and update circle pad direction
+    s16 circle_pad_x, circle_pad_y;
+    std::tie(circle_pad_x, circle_pad_y) = VideoCore::g_emu_window->GetCirclePadState();
+    state.hex |= GetCirclePadDirectionState(circle_pad_x, circle_pad_y).hex;
+
     mem->pad.current_state.hex = state.hex;
     mem->pad.index = next_pad_index;
-    next_touch_index = (next_touch_index + 1) % mem->pad.entries.size();
+    next_pad_index = (next_pad_index + 1) % mem->pad.entries.size();
 
     // Get the previous Pad state
     u32 last_entry_index = (mem->pad.index - 1) % mem->pad.entries.size();
@@ -79,18 +93,14 @@ void Update() {
     PadState changed = { { (state.hex ^ old_state.hex) } };
 
     // Get the current Pad entry
-    PadDataEntry* pad_entry = &mem->pad.entries[mem->pad.index];
+    PadDataEntry& pad_entry = mem->pad.entries[mem->pad.index];
 
     // Update entry properties
-    pad_entry->current_state.hex = state.hex;
-    pad_entry->delta_additions.hex = changed.hex & state.hex;
-    pad_entry->delta_removals.hex = changed.hex & old_state.hex;;
-
-    // Set circle Pad
-    pad_entry->circle_pad_x = state.circle_left  ? -MAX_CIRCLEPAD_POS :
-                              state.circle_right ?  MAX_CIRCLEPAD_POS : 0x0;
-    pad_entry->circle_pad_y = state.circle_down  ? -MAX_CIRCLEPAD_POS :
-                              state.circle_up    ?  MAX_CIRCLEPAD_POS : 0x0;
+    pad_entry.current_state.hex = state.hex;
+    pad_entry.delta_additions.hex = changed.hex & state.hex;
+    pad_entry.delta_removals.hex = changed.hex & old_state.hex;
+    pad_entry.circle_pad_x = circle_pad_x;
+    pad_entry.circle_pad_y = circle_pad_y;
 
     // If we just updated index 0, provide a new timestamp
     if (mem->pad.index == 0) {
@@ -102,11 +112,11 @@ void Update() {
     next_touch_index = (next_touch_index + 1) % mem->touch.entries.size();
 
     // Get the current touch entry
-    TouchDataEntry* touch_entry = &mem->touch.entries[mem->touch.index];
+    TouchDataEntry& touch_entry = mem->touch.entries[mem->touch.index];
     bool pressed = false;
 
-    std::tie(touch_entry->x, touch_entry->y, pressed) = VideoCore::g_emu_window->GetTouchState();
-    touch_entry->valid = pressed ? 1 : 0;
+    std::tie(touch_entry.x, touch_entry.y, pressed) = VideoCore::g_emu_window->GetTouchState();
+    touch_entry.valid.Assign(pressed ? 1 : 0);
 
     // TODO(bunnei): We're not doing anything with offset 0xA8 + 0x18 of HID SharedMemory, which
     // supposedly is "Touch-screen entry, which contains the raw coordinate data prior to being
@@ -121,6 +131,58 @@ void Update() {
     // Signal both handles when there's an update to Pad or touch
     event_pad_or_touch_1->Signal();
     event_pad_or_touch_2->Signal();
+
+    // Update accelerometer
+    if (enable_accelerometer_count > 0) {
+        mem->accelerometer.index = next_accelerometer_index;
+        next_accelerometer_index = (next_accelerometer_index + 1) % mem->accelerometer.entries.size();
+
+        AccelerometerDataEntry& accelerometer_entry = mem->accelerometer.entries[mem->accelerometer.index];
+        std::tie(accelerometer_entry.x, accelerometer_entry.y, accelerometer_entry.z)
+            = VideoCore::g_emu_window->GetAccelerometerState();
+
+        // Make up "raw" entry
+        // TODO(wwylele):
+        // From hardware testing, the raw_entry values are approximately,
+        // but not exactly, as twice as corresponding entries (or with a minus sign).
+        // It may caused by system calibration to the accelerometer.
+        // Figure out how it works, or, if no game reads raw_entry,
+        // the following three lines can be removed and leave raw_entry unimplemented.
+        mem->accelerometer.raw_entry.x = -2 * accelerometer_entry.x;
+        mem->accelerometer.raw_entry.z = 2 * accelerometer_entry.y;
+        mem->accelerometer.raw_entry.y = -2 * accelerometer_entry.z;
+
+        // If we just updated index 0, provide a new timestamp
+        if (mem->accelerometer.index == 0) {
+            mem->accelerometer.index_reset_ticks_previous = mem->accelerometer.index_reset_ticks;
+            mem->accelerometer.index_reset_ticks = (s64)CoreTiming::GetTicks();
+        }
+
+        event_accelerometer->Signal();
+    }
+
+    // Update gyroscope
+    if (enable_gyroscope_count > 0) {
+        mem->gyroscope.index = next_gyroscope_index;
+        next_gyroscope_index = (next_gyroscope_index + 1) % mem->gyroscope.entries.size();
+
+        GyroscopeDataEntry& gyroscope_entry = mem->gyroscope.entries[mem->gyroscope.index];
+        std::tie(gyroscope_entry.x, gyroscope_entry.y, gyroscope_entry.z)
+            = VideoCore::g_emu_window->GetGyroscopeState();
+
+        // Make up "raw" entry
+        mem->gyroscope.raw_entry.x = gyroscope_entry.x;
+        mem->gyroscope.raw_entry.z = -gyroscope_entry.y;
+        mem->gyroscope.raw_entry.y = gyroscope_entry.z;
+
+        // If we just updated index 0, provide a new timestamp
+        if (mem->gyroscope.index == 0) {
+            mem->gyroscope.index_reset_ticks_previous = mem->gyroscope.index_reset_ticks;
+            mem->gyroscope.index_reset_ticks = (s64)CoreTiming::GetTicks();
+        }
+
+        event_gyroscope->Signal();
+    }
 }
 
 void GetIPCHandles(Service::Interface* self) {
@@ -140,39 +202,68 @@ void GetIPCHandles(Service::Interface* self) {
 void EnableAccelerometer(Service::Interface* self) {
     u32* cmd_buff = Kernel::GetCommandBuffer();
 
+    ++enable_accelerometer_count;
     event_accelerometer->Signal();
 
     cmd_buff[1] = RESULT_SUCCESS.raw;
 
-    LOG_WARNING(Service_HID, "(STUBBED) called");
+    LOG_DEBUG(Service_HID, "called");
 }
 
 void DisableAccelerometer(Service::Interface* self) {
     u32* cmd_buff = Kernel::GetCommandBuffer();
 
+    --enable_accelerometer_count;
     event_accelerometer->Signal();
 
     cmd_buff[1] = RESULT_SUCCESS.raw;
 
-    LOG_WARNING(Service_HID, "(STUBBED) called");
+    LOG_DEBUG(Service_HID, "called");
 }
 
 void EnableGyroscopeLow(Service::Interface* self) {
     u32* cmd_buff = Kernel::GetCommandBuffer();
 
+    ++enable_gyroscope_count;
     event_gyroscope->Signal();
 
     cmd_buff[1] = RESULT_SUCCESS.raw;
 
-    LOG_WARNING(Service_HID, "(STUBBED) called");
+    LOG_DEBUG(Service_HID, "called");
 }
 
 void DisableGyroscopeLow(Service::Interface* self) {
     u32* cmd_buff = Kernel::GetCommandBuffer();
 
+    --enable_gyroscope_count;
     event_gyroscope->Signal();
 
     cmd_buff[1] = RESULT_SUCCESS.raw;
+
+    LOG_DEBUG(Service_HID, "called");
+}
+
+void GetGyroscopeLowRawToDpsCoefficient(Service::Interface* self) {
+    u32* cmd_buff = Kernel::GetCommandBuffer();
+
+    cmd_buff[1] = RESULT_SUCCESS.raw;
+
+    f32 coef = VideoCore::g_emu_window->GetGyroscopeRawToDpsCoefficient();
+    memcpy(&cmd_buff[2], &coef, 4);
+}
+
+void GetGyroscopeLowCalibrateParam(Service::Interface* self) {
+    u32* cmd_buff = Kernel::GetCommandBuffer();
+
+    cmd_buff[1] = RESULT_SUCCESS.raw;
+
+    const s16 param_unit = 6700; // an approximate value taken from hw
+    GyroscopeCalibrateParam param = {
+        { 0, param_unit, -param_unit },
+        { 0, param_unit, -param_unit },
+        { 0, param_unit, -param_unit },
+    };
+    memcpy(&cmd_buff[2], &param, sizeof(param));
 
     LOG_WARNING(Service_HID, "(STUBBED) called");
 }
@@ -195,18 +286,19 @@ void Init() {
     AddService(new HID_SPVR_Interface);
 
     using Kernel::MemoryPermission;
-    shared_mem = SharedMemory::Create(0x1000, MemoryPermission::ReadWrite,
-            MemoryPermission::Read, "HID:SharedMem");
+    shared_mem = SharedMemory::Create(nullptr, 0x1000,
+                                      MemoryPermission::ReadWrite, MemoryPermission::Read,
+                                      0, Kernel::MemoryRegion::BASE, "HID:SharedMemory");
 
     next_pad_index = 0;
     next_touch_index = 0;
 
     // Create event handles
-    event_pad_or_touch_1 = Event::Create(RESETTYPE_ONESHOT, "HID:EventPadOrTouch1");
-    event_pad_or_touch_2 = Event::Create(RESETTYPE_ONESHOT, "HID:EventPadOrTouch2");
-    event_accelerometer  = Event::Create(RESETTYPE_ONESHOT, "HID:EventAccelerometer");
-    event_gyroscope      = Event::Create(RESETTYPE_ONESHOT, "HID:EventGyroscope");
-    event_debug_pad      = Event::Create(RESETTYPE_ONESHOT, "HID:EventDebugPad");
+    event_pad_or_touch_1 = Event::Create(ResetType::OneShot, "HID:EventPadOrTouch1");
+    event_pad_or_touch_2 = Event::Create(ResetType::OneShot, "HID:EventPadOrTouch2");
+    event_accelerometer  = Event::Create(ResetType::OneShot, "HID:EventAccelerometer");
+    event_gyroscope      = Event::Create(ResetType::OneShot, "HID:EventGyroscope");
+    event_debug_pad      = Event::Create(ResetType::OneShot, "HID:EventDebugPad");
 }
 
 void Shutdown() {

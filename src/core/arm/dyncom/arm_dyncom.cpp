@@ -3,8 +3,7 @@
 // Refer to the license.txt file included.
 
 #include <cstring>
-
-#include "common/make_unique.h"
+#include <memory>
 
 #include "core/arm/skyeye_common/armstate.h"
 #include "core/arm/skyeye_common/armsupp.h"
@@ -18,7 +17,7 @@
 #include "core/core_timing.h"
 
 ARM_DynCom::ARM_DynCom(PrivilegeMode initial_mode) {
-    state = Common::make_unique<ARMul_State>(initial_mode);
+    state = std::make_unique<ARMul_State>(initial_mode);
 }
 
 ARM_DynCom::~ARM_DynCom() {
@@ -94,7 +93,7 @@ void ARM_DynCom::ResetContext(Core::ThreadContext& context, u32 stack_top, u32 e
     context.cpu_registers[0] = arg;
     context.pc = entry_point;
     context.sp = stack_top;
-    context.cpsr = 0x1F; // Usermode
+    context.cpsr = USER32MODE | ((entry_point & 1) << 5); // Usermode and THUMB mode
 }
 
 void ARM_DynCom::SaveContext(Core::ThreadContext& ctx) {

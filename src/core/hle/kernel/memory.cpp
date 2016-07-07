@@ -7,6 +7,8 @@
 #include <utility>
 #include <vector>
 
+#include "audio_core/audio_core.h"
+
 #include "common/common_types.h"
 #include "common/logging/log.h"
 
@@ -53,6 +55,9 @@ void MemoryInit(u32 mem_type) {
         memory_regions[i].size = memory_region_sizes[mem_type][i];
         memory_regions[i].used = 0;
         memory_regions[i].linear_heap_memory = std::make_shared<std::vector<u8>>();
+        // Reserve enough space for this region of FCRAM.
+        // We do not want this block of memory to be relocated when allocating from it.
+        memory_regions[i].linear_heap_memory->reserve(memory_regions[i].size);
 
         base += memory_regions[i].size;
     }
@@ -105,10 +110,7 @@ struct MemoryArea {
 
 // We don't declare the IO regions in here since its handled by other means.
 static MemoryArea memory_areas[] = {
-    {SHARED_MEMORY_VADDR, SHARED_MEMORY_SIZE,     "Shared Memory"}, // Shared memory
     {VRAM_VADDR,          VRAM_SIZE,              "VRAM"},          // Video memory (VRAM)
-    {DSP_RAM_VADDR,       DSP_RAM_SIZE,           "DSP RAM"},       // DSP memory
-    {TLS_AREA_VADDR,      TLS_AREA_SIZE,          "TLS Area"},      // TLS memory
 };
 
 }
@@ -133,6 +135,8 @@ void InitLegacyAddressSpace(Kernel::VMManager& address_space) {
     auto shared_page_vma = address_space.MapBackingMemory(SHARED_PAGE_VADDR,
             (u8*)&SharedPage::shared_page, SHARED_PAGE_SIZE, MemoryState::Shared).MoveFrom();
     address_space.Reprotect(shared_page_vma, VMAPermission::Read);
+
+    AudioCore::AddAddressSpace(address_space);
 }
 
 } // namespace

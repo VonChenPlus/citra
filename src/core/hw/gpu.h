@@ -78,7 +78,7 @@ struct Regs {
 
     INSERT_PADDING_WORDS(0x4);
 
-    struct {
+    struct MemoryFillConfig {
         u32 address_start;
         u32 address_end;
 
@@ -165,7 +165,7 @@ struct Regs {
 
     INSERT_PADDING_WORDS(0x169);
 
-    struct {
+    struct DisplayTransferConfig {
         u32 input_address;
         u32 output_address;
 
@@ -263,17 +263,17 @@ struct Regs {
 
     INSERT_PADDING_WORDS(0x9c3);
 
-    static inline size_t NumIds() {
+    static constexpr size_t NumIds() {
         return sizeof(Regs) / sizeof(u32);
     }
 
-    u32& operator [] (int index) const {
-        u32* content = (u32*)this;
+    const u32& operator [] (int index) const {
+        const u32* content = reinterpret_cast<const u32*>(this);
         return content[index];
     }
 
     u32& operator [] (int index) {
-        u32* content = (u32*)this;
+        u32* content = reinterpret_cast<u32*>(this);
         return content[index];
     }
 

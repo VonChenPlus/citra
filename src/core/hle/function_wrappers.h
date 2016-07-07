@@ -10,6 +10,7 @@
 #include "core/memory.h"
 #include "core/hle/hle.h"
 #include "core/hle/result.h"
+#include "core/hle/svc.h"
 
 namespace HLE {
 
@@ -169,7 +170,8 @@ template<ResultCode func(s64*, u32, s32)> void Wrap() {
 
 template<ResultCode func(u32*, u32, u32, u32, u32)> void Wrap() {
     u32 param_1 = 0;
-    u32 retval = func(&param_1, PARAM(1), PARAM(2), PARAM(3), PARAM(4)).raw;
+    // The last parameter is passed in R0 instead of R4
+    u32 retval = func(&param_1, PARAM(1), PARAM(2), PARAM(3), PARAM(0)).raw;
     Core::g_app_core->SetReg(1, param_1);
     FuncReturn(retval);
 }
@@ -185,6 +187,20 @@ template<ResultCode func(s64*, Handle, u32)> void Wrap() {
     u32 retval = func(&param_1, PARAM(1), PARAM(2)).raw;
     Core::g_app_core->SetReg(1, (u32)param_1);
     Core::g_app_core->SetReg(2, (u32)(param_1 >> 32));
+    FuncReturn(retval);
+}
+
+template<ResultCode func(Handle, u32)> void Wrap() {
+    FuncReturn(func(PARAM(0), PARAM(1)).raw);
+}
+
+template<ResultCode func(Handle*, Handle*, const char*, u32)> void Wrap() {
+    Handle param_1 = 0;
+    Handle param_2 = 0;
+    u32 retval = func(&param_1, &param_2, reinterpret_cast<const char*>(Memory::GetPointer(PARAM(2))), PARAM(3)).raw;
+    // The first out parameter is moved into R2 and the second is moved into R1.
+    Core::g_app_core->SetReg(1, param_2);
+    Core::g_app_core->SetReg(2, param_1);
     FuncReturn(retval);
 }
 

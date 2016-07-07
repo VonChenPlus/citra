@@ -117,9 +117,10 @@ void Thread::Stop() {
     }
     wait_objects.clear();
 
-    Kernel::g_current_process->used_tls_slots[tls_index] = false;
-    g_current_process->misc_memory_used -= Memory::TLS_ENTRY_SIZE;
-    g_current_process->memory_region->used -= Memory::TLS_ENTRY_SIZE;
+    // Mark the TLS slot in the thread's page as free.
+    u32 tls_page = (tls_address - Memory::TLS_AREA_VADDR) / Memory::PAGE_SIZE;
+    u32 tls_slot = ((tls_address - Memory::TLS_AREA_VADDR) % Memory::PAGE_SIZE) / Memory::TLS_ENTRY_SIZE;
+    Kernel::g_current_process->tls_slots[tls_page].reset(tls_slot);
 
     HLE::Reschedule(__func__);
 }
@@ -181,6 +182,48 @@ static void PriorityBoostStarvedThreads() {
 }
 
 /**
+ * Gets the registers for timeout parameter of the next WaitSynchronization call.
+ * @param thread a pointer to the thread that is ready to call WaitSynchronization
+ * @returns a tuple of two register pointers to low and high part of the timeout parameter
+ */
+static std::tuple<u32*, u32*> GetWaitSynchTimeoutParameterRegister(Thread* thread) {
+    bool thumb_mode = (thread->context.cpsr & TBIT) != 0;
+    u16 thumb_inst = Memory::Read16(thread->context.pc & 0xFFFFFFFE);
+    u32 inst = Memory::Read32(thread->context.pc & 0xFFFFFFFC) & 0x0FFFFFFF;
+
+    if ((thumb_mode && thumb_inst == 0xDF24) || (!thumb_mode && inst == 0x0F000024)) {
+        // svc #0x24 (WaitSynchronization1)
+        return std::make_tuple(&thread->context.cpu_registers[2], &thread->context.cpu_registers[3]);
+    } else if ((thumb_mode && thumb_inst == 0xDF25) || (!thumb_mode && inst == 0x0F000025)) {
+        // svc #0x25 (WaitSynchronizationN)
+        return std::make_tuple(&thread->context.cpu_registers[0], &thread->context.cpu_registers[4]);
+    }
+
+    UNREACHABLE();
+}
+
+/**
+ * Updates the WaitSynchronization timeout paramter according to the difference
+ * between ticks of the last WaitSynchronization call and the incoming one.
+ * @param timeout_low a pointer to the register for the low part of the timeout parameter
+ * @param timeout_high a pointer to the register for the high part of the timeout parameter
+ * @param last_tick tick of the last WaitSynchronization call
+ */
+static void UpdateTimeoutParameter(u32* timeout_low, u32* timeout_high, u64 last_tick) {
+    s64 timeout = ((s64)*timeout_high << 32) | *timeout_low;
+
+    if (timeout != -1) {
+        timeout -= cyclesToUs(CoreTiming::GetTicks() - last_tick) * 1000; // in nanoseconds
+
+        if (timeout < 0)
+            timeout = 0;
+
+        *timeout_low = timeout & 0xFFFFFFFF;
+        *timeout_high = timeout >> 32;
+    }
+}
+
+/**
  * Switches the CPU's active thread context to that of the specified thread
  * @param new_thread The thread to switch to
  */
@@ -218,6 +261,13 @@ static void SwitchContext(Thread* new_thread) {
 
             // SVC instruction is 2 bytes for THUMB, 4 bytes for ARM
             new_thread->context.pc -= thumb_mode ? 2 : 4;
+
+            // Get the register for timeout parameter
+            u32* timeout_low, *timeout_high;
+            std::tie(timeout_low, timeout_high) = GetWaitSynchTimeoutParameterRegister(new_thread);
+
+            // Update the timeout parameter
+            UpdateTimeoutParameter(timeout_low, timeout_high, new_thread->last_running_ticks);
         }
 
         // Clean up the thread's wait_objects, they'll be restored if needed during
@@ -300,7 +350,7 @@ static void ThreadWakeupCallback(u64 thread_handle, int cycles_late) {
 
     thread->waitsynch_waited = false;
 
-    if (thread->status == THREADSTATUS_WAIT_SYNCH) {
+    if (thread->status == THREADSTATUS_WAIT_SYNCH || thread->status == THREADSTATUS_WAIT_ARB) {
         thread->SetWaitSynchronizationResult(ResultCode(ErrorDescription::Timeout, ErrorModule::OS,
                                                         ErrorSummary::StatusChanged, ErrorLevel::Info));
 
@@ -366,6 +416,31 @@ static void DebugThreadQueue() {
     }
 }
 
+/**
+ * Finds a free location for the TLS section of a thread.
+ * @param tls_slots The TLS page array of the thread's owner process.
+ * Returns a tuple of (page, slot, alloc_needed) where:
+ * page: The index of the first allocated TLS page that has free slots.
+ * slot: The index of the first free slot in the indicated page.
+ * alloc_needed: Whether there's a need to allocate a new TLS page (All pages are full).
+ */
+std::tuple<u32, u32, bool> GetFreeThreadLocalSlot(std::vector<std::bitset<8>>& tls_slots) {
+    // Iterate over all the allocated pages, and try to find one where not all slots are used.
+    for (unsigned page = 0; page < tls_slots.size(); ++page) {
+        const auto& page_tls_slots = tls_slots[page];
+        if (!page_tls_slots.all()) {
+            // We found a page with at least one free slot, find which slot it is
+            for (unsigned slot = 0; slot < page_tls_slots.size(); ++slot) {
+                if (!page_tls_slots.test(slot)) {
+                    return std::make_tuple(page, slot, false);
+                }
+            }
+        }
+    }
+
+    return std::make_tuple(0, 0, true);
+}
+
 ResultVal<SharedPtr<Thread>> Thread::Create(std::string name, VAddr entry_point, s32 priority,
         u32 arg, s32 processor_id, VAddr stack_top) {
     if (priority < THREADPRIO_HIGHEST || priority > THREADPRIO_LOWEST) {
@@ -377,7 +452,7 @@ ResultVal<SharedPtr<Thread>> Thread::Create(std::string name, VAddr entry_point,
         priority = new_priority;
     }
 
-    if (!Memory::GetPointer(entry_point)) {
+    if (!Memory::IsValidVirtualAddress(entry_point)) {
         LOG_ERROR(Kernel_SVC, "(name=%s): invalid entry %08x", name.c_str(), entry_point);
         // TODO: Verify error
         return ResultCode(ErrorDescription::InvalidAddress, ErrorModule::Kernel,
@@ -403,22 +478,50 @@ ResultVal<SharedPtr<Thread>> Thread::Create(std::string name, VAddr entry_point,
     thread->name = std::move(name);
     thread->callback_handle = wakeup_callback_handle_table.Create(thread).MoveFrom();
     thread->owner_process = g_current_process;
-    thread->tls_index = -1;
     thread->waitsynch_waited = false;
 
     // Find the next available TLS index, and mark it as used
-    auto& used_tls_slots = Kernel::g_current_process->used_tls_slots;
-    for (unsigned int i = 0; i < used_tls_slots.size(); ++i) {
-        if (used_tls_slots[i] == false) {
-            thread->tls_index = i;
-            used_tls_slots[i] = true;
-            break;
+    auto& tls_slots = Kernel::g_current_process->tls_slots;
+    bool needs_allocation = true;
+    u32 available_page; // Which allocated page has free space
+    u32 available_slot; // Which slot within the page is free
+
+    std::tie(available_page, available_slot, needs_allocation) = GetFreeThreadLocalSlot(tls_slots);
+
+    if (needs_allocation) {
+        // There are no already-allocated pages with free slots, lets allocate a new one.
+        // TLS pages are allocated from the BASE region in the linear heap.
+        MemoryRegionInfo* memory_region = GetMemoryRegion(MemoryRegion::BASE);
+        auto& linheap_memory = memory_region->linear_heap_memory;
+
+        if (linheap_memory->size() + Memory::PAGE_SIZE > memory_region->size) {
+            LOG_ERROR(Kernel_SVC, "Not enough space in region to allocate a new TLS page for thread");
+            return ResultCode(ErrorDescription::OutOfMemory, ErrorModule::Kernel, ErrorSummary::OutOfResource, ErrorLevel::Permanent);
         }
+
+        u32 offset = linheap_memory->size();
+
+        // Allocate some memory from the end of the linear heap for this region.
+        linheap_memory->insert(linheap_memory->end(), Memory::PAGE_SIZE, 0);
+        memory_region->used += Memory::PAGE_SIZE;
+        Kernel::g_current_process->linear_heap_used += Memory::PAGE_SIZE;
+
+        tls_slots.emplace_back(0); // The page is completely available at the start
+        available_page = tls_slots.size() - 1;
+        available_slot = 0; // Use the first slot in the new page
+
+        auto& vm_manager = Kernel::g_current_process->vm_manager;
+        vm_manager.RefreshMemoryBlockMappings(linheap_memory.get());
+
+        // Map the page to the current process' address space.
+        // TODO(Subv): Find the correct MemoryState for this region.
+        vm_manager.MapMemoryBlock(Memory::TLS_AREA_VADDR + available_page * Memory::PAGE_SIZE,
+                                  linheap_memory, offset, Memory::PAGE_SIZE, MemoryState::Private);
     }
 
-    ASSERT_MSG(thread->tls_index != -1, "Out of TLS space");
-    g_current_process->misc_memory_used += Memory::TLS_ENTRY_SIZE;
-    g_current_process->memory_region->used += Memory::TLS_ENTRY_SIZE;
+    // Mark the slot as used
+    tls_slots[available_page].set(available_slot);
+    thread->tls_address = Memory::TLS_AREA_VADDR + available_page * Memory::PAGE_SIZE + available_slot * Memory::TLS_ENTRY_SIZE;
 
     // TODO(peachum): move to ScheduleThread() when scheduler is added so selected core is used
     // to initialize the context
@@ -472,6 +575,8 @@ SharedPtr<Thread> SetupMainThread(u32 entry_point, s32 priority) {
 
     SharedPtr<Thread> thread = thread_res.MoveFrom();
 
+    thread->context.fpscr = FPSCR_DEFAULT_NAN | FPSCR_FLUSH_TO_ZERO | FPSCR_ROUND_TOZERO | FPSCR_IXC; // 0x03C00010
+
     // Run new "main" thread
     SwitchContext(thread.get());
 
@@ -483,10 +588,15 @@ void Reschedule() {
 
     Thread* cur = GetCurrentThread();
     Thread* next = PopNextReadyThread();
-    HLE::g_reschedule = false;
 
-    // Don't bother switching to the same thread
-    if (next == cur)
+    HLE::DoneRescheduling();
+
+    // Don't bother switching to the same thread.
+    // But if the thread was waiting on objects, we still need to switch it
+    // to perform PC modification, change state to RUNNING, etc.
+    // This occurs in the case when an object the thread is waiting on immediately wakes up
+    // the current thread before Reschedule() is called.
+    if (next == cur && (next == nullptr || next->waitsynch_waited == false))
         return;
 
     if (cur && next) {
@@ -506,10 +616,6 @@ void Thread::SetWaitSynchronizationResult(ResultCode result) {
 
 void Thread::SetWaitSynchronizationOutput(s32 output) {
     context.cpu_registers[1] = output;
-}
-
-VAddr Thread::GetTLSAddress() const {
-    return Memory::TLS_AREA_VADDR + tls_index * Memory::TLS_ENTRY_SIZE;
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////

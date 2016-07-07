@@ -2,6 +2,9 @@
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
+#include <algorithm>
+#include <array>
+#include <iterator>
 #include <memory>
 
 #include <boost/range/algorithm/copy.hpp>
@@ -18,11 +21,12 @@
 
 #include "core/hw/gpu.h"
 #include "core/hw/lcd.h"
+#include "core/tracer/recorder.h"
 
 #include "nihstro/float24.h"
 
 #include "video_core/pica.h"
-
+#include "video_core/pica_state.h"
 
 GraphicsTracingWidget::GraphicsTracingWidget(std::shared_ptr<Pica::DebugContext> debug_context,
                                              QWidget* parent)
@@ -70,7 +74,7 @@ void GraphicsTracingWidget::StartRecording() {
     std::array<u32, 4 * 16> default_attributes;
     for (unsigned i = 0; i < 16; ++i) {
         for (unsigned comp = 0; comp < 3; ++comp) {
-            default_attributes[4 * i + comp] = nihstro::to_float24(Pica::g_state.vs.default_attributes[i][comp].ToFloat32());
+            default_attributes[4 * i + comp] = nihstro::to_float24(Pica::g_state.vs_default_attributes[i][comp].ToFloat32());
         }
     }
 

@@ -6,7 +6,7 @@
 
 #include <string>
 
-#include "video_core/renderer_opengl/gl_rasterizer.h"
+union PicaShaderConfig;
 
 namespace GLShader {
 

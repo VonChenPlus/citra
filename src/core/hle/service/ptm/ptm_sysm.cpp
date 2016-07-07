@@ -2,7 +2,6 @@
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
-#include "core/hle/hle.h"
 #include "core/hle/service/ptm/ptm.h"
 #include "core/hle/service/ptm/ptm_sysm.h"
 
@@ -19,7 +18,7 @@ const Interface::FunctionInfo FunctionTable[] = {
     {0x040700C0, nullptr,             "ShutdownAsync"},
     {0x04080000, nullptr,             "Awake"},
     {0x04090080, nullptr,             "RebootAsync"},
-    {0x040A0000, nullptr,             "CheckNew3DS"},
+    {0x040A0000, CheckNew3DS,         "CheckNew3DS"},
     {0x08010640, nullptr,             "SetInfoLEDPattern"},
     {0x08020040, nullptr,             "SetInfoLEDPatternHeader"},
     {0x08030000, nullptr,             "GetInfoLEDStatus"},
@@ -36,10 +35,11 @@ const Interface::FunctionInfo FunctionTable[] = {
     {0x080E0140, nullptr,             "NotifyPlayEvent"},
     {0x080F0000, IsLegacyPowerOff,    "IsLegacyPowerOff"},
     {0x08100000, nullptr,             "ClearLegacyPowerOff"},
-    {0x08110000, nullptr,             "GetShellStatus"},
+    {0x08110000, GetShellState,       "GetShellState"},
     {0x08120000, nullptr,             "IsShutdownByBatteryEmpty"},
     {0x08130000, nullptr,             "FormatSavedata"},
-    {0x08140000, nullptr,             "GetLegacyJumpProhibitedFlag"}
+    {0x08140000, nullptr,             "GetLegacyJumpProhibitedFlag"},
+    {0x08180040, nullptr,             "ConfigureNew3DSCPU"},
 };
 
 PTM_Sysm_Interface::PTM_Sysm_Interface() {

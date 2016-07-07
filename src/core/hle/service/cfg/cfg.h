@@ -5,10 +5,15 @@
 #pragma once
 
 #include <array>
-#include "core/hle/result.h"
-#include "core/hle/service/service.h"
+
+#include "common/common_types.h"
+
+union ResultCode;
 
 namespace Service {
+
+class Interface;
+
 namespace CFG {
 
 enum SystemModel {
@@ -91,19 +96,6 @@ void GetCountryCodeString(Service::Interface* self);
  *      2 : Country Code ID
  */
 void GetCountryCodeID(Service::Interface* self);
-
-/**
- * CFG::GetConfigInfoBlk2 service function
- *  Inputs:
- *      0 : 0x00010082
- *      1 : Size
- *      2 : Block ID
- *      3 : Descriptor for the output buffer
- *      4 : Output buffer pointer
- *  Outputs:
- *      1 : Result of function, 0 on success, otherwise error code
- */
-void GetConfigInfoBlk2(Service::Interface* self);
 
 /**
  * CFG::SecureInfoGetRegion service function

@@ -4,34 +4,41 @@
 
 #include <algorithm>
 #include <condition_variable>
+#include <cstdint>
 #include <cstring>
 #include <fstream>
-#include <list>
 #include <map>
 #include <mutex>
+#include <stdexcept>
 #include <string>
 
 #ifdef HAVE_PNG
 #include <png.h>
+#include <setjmp.h>
 #endif
 
+#include <nihstro/bit_field.h>
 #include <nihstro/float24.h>
 #include <nihstro/shader_binary.h>
 
 #include "common/assert.h"
+#include "common/bit_field.h"
 #include "common/color.h"
 #include "common/common_types.h"
 #include "common/file_util.h"
+#include "common/logging/log.h"
 #include "common/math_util.h"
 #include "common/vector_math.h"
 
-#include "core/settings.h"
-
+#include "video_core/debug_utils/debug_utils.h"
 #include "video_core/pica.h"
+#include "video_core/pica_state.h"
+#include "video_core/pica_types.h"
+#include "video_core/rasterizer_interface.h"
 #include "video_core/renderer_base.h"
+#include "video_core/shader/shader.h"
 #include "video_core/utils.h"
 #include "video_core/video_core.h"
-#include "video_core/debug_utils/debug_utils.h"
 
 using nihstro::DVLBHeader;
 using nihstro::DVLEHeader;
@@ -39,17 +46,12 @@ using nihstro::DVLPHeader;
 
 namespace Pica {
 
-void DebugContext::OnEvent(Event event, void* data) {
-    if (!breakpoints[event].enabled)
-        return;
-
+void DebugContext::DoOnEvent(Event event, void* data) {
     {
         std::unique_lock<std::mutex> lock(breakpoint_mutex);
 
-        if (Settings::values.use_hw_renderer) {
-            // Commit the hardware renderer's framebuffer so it will show on debug widgets
-            VideoCore::g_renderer->hw_rasterizer->CommitFramebuffer();
-        }
+        // Commit the rasterizer's caches so framebuffers, render targets, etc. will show on debug widgets
+        VideoCore::g_renderer->Rasterizer()->FlushAll();
 
         // TODO: Should stop the CPU thread here once we multithread emulation.
 
@@ -86,45 +88,16 @@ std::shared_ptr<DebugContext> g_debug_context; // TODO: Get rid of this global
 
 namespace DebugUtils {
 
-void GeometryDumper::AddTriangle(Vertex& v0, Vertex& v1, Vertex& v2) {
-    vertices.push_back(v0);
-    vertices.push_back(v1);
-    vertices.push_back(v2);
-
-    int num_vertices = (int)vertices.size();
-    faces.push_back({{ num_vertices-3, num_vertices-2, num_vertices-1 }});
-}
-
-void GeometryDumper::Dump() {
-    static int index = 0;
-    std::string filename = std::string("geometry_dump") + std::to_string(++index) + ".obj";
-
-    std::ofstream file(filename);
-
-    for (const auto& vertex : vertices) {
-        file << "v " << vertex.pos[0]
-             << " "  << vertex.pos[1]
-             << " "  << vertex.pos[2] << std::endl;
-    }
-
-    for (const Face& face : faces) {
-        file << "f " << 1+face.index[0]
-             << " "  << 1+face.index[1]
-             << " "  << 1+face.index[2] << std::endl;
-    }
-}
-
-
-void DumpShader(const std::string& filename, const Regs::ShaderConfig& config, const State::ShaderSetup& setup, const Regs::VSOutputAttributes* output_attributes)
+void DumpShader(const std::string& filename, const Regs::ShaderConfig& config, const Shader::ShaderSetup& setup, const Regs::VSOutputAttributes* output_attributes)
 {
     struct StuffToWrite {
-        u8* pointer;
+        const u8* pointer;
         u32 size;
     };
     std::vector<StuffToWrite> writing_queue;
     u32 write_offset = 0;
 
-    auto QueueForWriting = [&writing_queue,&write_offset](u8* pointer, u32 size) {
+    auto QueueForWriting = [&writing_queue,&write_offset](const u8* pointer, u32 size) {
         writing_queue.push_back({pointer, size});
         u32 old_write_offset = write_offset;
         write_offset += size;
@@ -203,11 +176,11 @@ void DumpShader(const std::string& filename, const Regs::ShaderConfig& config, c
 
                     if (it == output_info_table.end()) {
                         output_info_table.emplace_back();
-                        output_info_table.back().type = type;
-                        output_info_table.back().component_mask = component_mask;
-                        output_info_table.back().id = i;
+                        output_info_table.back().type.Assign(type);
+                        output_info_table.back().component_mask.Assign(component_mask);
+                        output_info_table.back().id.Assign(i);
                     } else {
-                        it->component_mask = it->component_mask | component_mask;
+                        it->component_mask.Assign(it->component_mask | component_mask);
                     }
                 } catch (const std::out_of_range& ) {
                     DEBUG_ASSERT_MSG(false, "Unknown output attribute mapping");
@@ -229,27 +202,28 @@ void DumpShader(const std::string& filename, const Regs::ShaderConfig& config, c
     DVLPHeader dvlp{ DVLPHeader::MAGIC_WORD };
     DVLEHeader dvle{ DVLEHeader::MAGIC_WORD };
 
-    QueueForWriting((u8*)&dvlb, sizeof(dvlb));
-    u32 dvlp_offset = QueueForWriting((u8*)&dvlp, sizeof(dvlp));
-    dvlb.dvle_offset = QueueForWriting((u8*)&dvle, sizeof(dvle));
+    QueueForWriting(reinterpret_cast<const u8*>(&dvlb), sizeof(dvlb));
+    u32 dvlp_offset = QueueForWriting(reinterpret_cast<const u8*>(&dvlp), sizeof(dvlp));
+    dvlb.dvle_offset = QueueForWriting(reinterpret_cast<const u8*>(&dvle), sizeof(dvle));
 
     // TODO: Reduce the amount of binary code written to relevant portions
     dvlp.binary_offset = write_offset - dvlp_offset;
-    dvlp.binary_size_words = setup.program_code.size();
-    QueueForWriting((u8*)setup.program_code.data(), setup.program_code.size() * sizeof(u32));
+    dvlp.binary_size_words = static_cast<uint32_t>(setup.program_code.size());
+    QueueForWriting(reinterpret_cast<const u8*>(setup.program_code.data()),
+                    static_cast<u32>(setup.program_code.size()) * sizeof(u32));
 
     dvlp.swizzle_info_offset = write_offset - dvlp_offset;
-    dvlp.swizzle_info_num_entries = setup.swizzle_data.size();
+    dvlp.swizzle_info_num_entries = static_cast<uint32_t>(setup.swizzle_data.size());
     u32 dummy = 0;
     for (unsigned int i = 0; i < setup.swizzle_data.size(); ++i) {
-        QueueForWriting((u8*)&setup.swizzle_data[i], sizeof(setup.swizzle_data[i]));
-        QueueForWriting((u8*)&dummy, sizeof(dummy));
+        QueueForWriting(reinterpret_cast<const u8*>(&setup.swizzle_data[i]), sizeof(setup.swizzle_data[i]));
+        QueueForWriting(reinterpret_cast<const u8*>(&dummy), sizeof(dummy));
     }
 
     dvle.main_offset_words = config.main_offset;
     dvle.output_register_table_offset = write_offset - dvlb.dvle_offset;
     dvle.output_register_table_size = static_cast<u32>(output_info_table.size());
-    QueueForWriting((u8*)output_info_table.data(), static_cast<u32>(output_info_table.size() * sizeof(OutputRegisterInfo)));
+    QueueForWriting(reinterpret_cast<const u8*>(output_info_table.data()), static_cast<u32>(output_info_table.size() * sizeof(OutputRegisterInfo)));
 
     // TODO: Create a label table for "main"
 
@@ -291,16 +265,16 @@ void DumpShader(const std::string& filename, const Regs::ShaderConfig& config, c
             constant_table.emplace_back(constant);
     }
     dvle.constant_table_offset = write_offset - dvlb.dvle_offset;
-    dvle.constant_table_size = constant_table.size();
+    dvle.constant_table_size = static_cast<uint32_t>(constant_table.size());
     for (const auto& constant : constant_table) {
-        QueueForWriting((uint8_t*)&constant, sizeof(constant));
+        QueueForWriting(reinterpret_cast<const u8*>(&constant), sizeof(constant));
     }
 
     // Write data to file
     std::ofstream file(filename, std::ios_base::out | std::ios_base::binary);
 
-    for (auto& chunk : writing_queue) {
-        file.write((char*)chunk.pointer, chunk.size);
+    for (const auto& chunk : writing_queue) {
+        file.write(reinterpret_cast<const char*>(chunk.pointer), chunk.size);
     }
 }
 
@@ -316,7 +290,7 @@ void StartPicaTracing()
     }
 
     std::lock_guard<std::mutex> lock(pica_trace_mutex);
-    pica_trace = std::unique_ptr<PicaTrace>(new PicaTrace);
+    pica_trace = std::make_unique<PicaTrace>();
 
     is_pica_tracing = true;
 }
@@ -354,7 +328,7 @@ std::unique_ptr<PicaTrace> FinishPicaTracing()
     std::lock_guard<std::mutex> lock(pica_trace_mutex);
     std::unique_ptr<PicaTrace> ret(std::move(pica_trace));
 
-    return std::move(ret);
+    return ret;
 }
 
 const Math::Vec4<u8> LookupTexture(const u8* source, int x, int y, const TextureInfo& info, bool disable_alpha) {
@@ -616,6 +590,21 @@ TextureInfo TextureInfo::FromPicaRegister(const Regs::TextureConfig& config,
     return info;
 }
 
+#ifdef HAVE_PNG
+// Adapter functions to libpng to write/flush to File::IOFile instances.
+static void WriteIOFile(png_structp png_ptr, png_bytep data, png_size_t length) {
+    auto* fp = static_cast<FileUtil::IOFile*>(png_get_io_ptr(png_ptr));
+    if (!fp->WriteBytes(data, length))
+         png_error(png_ptr, "Failed to write to output PNG file.");
+}
+
+static void FlushIOFile(png_structp png_ptr) {
+    auto* fp = static_cast<FileUtil::IOFile*>(png_get_io_ptr(png_ptr));
+    if (!fp->Flush())
+         png_error(png_ptr, "Failed to flush to output PNG file.");
+}
+#endif
+
 void DumpTexture(const Pica::Regs::TextureConfig& texture_config, u8* data) {
 #ifndef HAVE_PNG
     return;
@@ -659,7 +648,7 @@ void DumpTexture(const Pica::Regs::TextureConfig& texture_config, u8* data) {
         goto finalise;
     }
 
-    png_init_io(png_ptr, fp.GetHandle());
+    png_set_write_fn(png_ptr, static_cast<void*>(&fp), WriteIOFile, FlushIOFile);
 
     // Write header (8 bit color depth)
     png_set_IHDR(png_ptr, info_ptr, texture_config.width, texture_config.height,
@@ -707,106 +696,125 @@ finalise:
 #endif
 }
 
-void DumpTevStageConfig(const std::array<Pica::Regs::TevStageConfig,6>& stages)
-{
-    using Source = Pica::Regs::TevStageConfig::Source;
-    using ColorModifier = Pica::Regs::TevStageConfig::ColorModifier;
-    using AlphaModifier = Pica::Regs::TevStageConfig::AlphaModifier;
-    using Operation = Pica::Regs::TevStageConfig::Operation;
+static std::string ReplacePattern(const std::string& input, const std::string& pattern, const std::string& replacement) {
+    size_t start = input.find(pattern);
+    if (start == std::string::npos)
+        return input;
 
+    std::string ret = input;
+    ret.replace(start, pattern.length(), replacement);
+    return ret;
+}
+
+static std::string GetTevStageConfigSourceString(const Pica::Regs::TevStageConfig::Source& source) {
+    using Source = Pica::Regs::TevStageConfig::Source;
+    static const std::map<Source, std::string> source_map = {
+        { Source::PrimaryColor,           "PrimaryColor" },
+        { Source::PrimaryFragmentColor,   "PrimaryFragmentColor" },
+        { Source::SecondaryFragmentColor, "SecondaryFragmentColor" },
+        { Source::Texture0,               "Texture0" },
+        { Source::Texture1,               "Texture1" },
+        { Source::Texture2,               "Texture2" },
+        { Source::Texture3,               "Texture3" },
+        { Source::PreviousBuffer,         "PreviousBuffer" },
+        { Source::Constant,               "Constant" },
+        { Source::Previous,               "Previous" },
+    };
+
+    const auto src_it = source_map.find(source);
+    if (src_it == source_map.end())
+        return "Unknown";
+
+    return src_it->second;
+}
+
+static std::string GetTevStageConfigColorSourceString(const Pica::Regs::TevStageConfig::Source& source, const Pica::Regs::TevStageConfig::ColorModifier modifier) {
+    using ColorModifier = Pica::Regs::TevStageConfig::ColorModifier;
+    static const std::map<ColorModifier, std::string> color_modifier_map = {
+        { ColorModifier::SourceColor,         "%source.rgb" },
+        { ColorModifier::OneMinusSourceColor, "(1.0 - %source.rgb)" },
+        { ColorModifier::SourceAlpha,         "%source.aaa" },
+        { ColorModifier::OneMinusSourceAlpha, "(1.0 - %source.aaa)" },
+        { ColorModifier::SourceRed,           "%source.rrr" },
+        { ColorModifier::OneMinusSourceRed,   "(1.0 - %source.rrr)" },
+        { ColorModifier::SourceGreen,         "%source.ggg" },
+        { ColorModifier::OneMinusSourceGreen, "(1.0 - %source.ggg)" },
+        { ColorModifier::SourceBlue,          "%source.bbb" },
+        { ColorModifier::OneMinusSourceBlue,  "(1.0 - %source.bbb)" },
+    };
+
+    auto src_str = GetTevStageConfigSourceString(source);
+    auto modifier_it = color_modifier_map.find(modifier);
+    std::string modifier_str = "%source.????";
+    if (modifier_it != color_modifier_map.end())
+        modifier_str = modifier_it->second;
+
+    return ReplacePattern(modifier_str, "%source", src_str);
+}
+
+static std::string GetTevStageConfigAlphaSourceString(const Pica::Regs::TevStageConfig::Source& source, const Pica::Regs::TevStageConfig::AlphaModifier modifier) {
+    using AlphaModifier = Pica::Regs::TevStageConfig::AlphaModifier;
+    static const std::map<AlphaModifier, std::string> alpha_modifier_map = {
+        { AlphaModifier::SourceAlpha,         "%source.a" },
+        { AlphaModifier::OneMinusSourceAlpha, "(1.0 - %source.a)" },
+        { AlphaModifier::SourceRed,           "%source.r" },
+        { AlphaModifier::OneMinusSourceRed,   "(1.0 - %source.r)" },
+        { AlphaModifier::SourceGreen,         "%source.g" },
+        { AlphaModifier::OneMinusSourceGreen, "(1.0 - %source.g)" },
+        { AlphaModifier::SourceBlue,          "%source.b" },
+        { AlphaModifier::OneMinusSourceBlue,  "(1.0 - %source.b)" },
+    };
+
+    auto src_str = GetTevStageConfigSourceString(source);
+    auto modifier_it = alpha_modifier_map.find(modifier);
+    std::string modifier_str = "%source.????";
+    if (modifier_it != alpha_modifier_map.end())
+        modifier_str = modifier_it->second;
+
+    return ReplacePattern(modifier_str, "%source", src_str);
+}
+
+static std::string GetTevStageConfigOperationString(const Pica::Regs::TevStageConfig::Operation& operation) {
+    using Operation = Pica::Regs::TevStageConfig::Operation;
+    static const std::map<Operation, std::string> combiner_map = {
+        { Operation::Replace,         "%source1" },
+        { Operation::Modulate,        "(%source1 * %source2)" },
+        { Operation::Add,             "(%source1 + %source2)" },
+        { Operation::AddSigned,       "(%source1 + %source2) - 0.5" },
+        { Operation::Lerp,            "lerp(%source1, %source2, %source3)" },
+        { Operation::Subtract,        "(%source1 - %source2)" },
+        { Operation::Dot3_RGB,        "dot(%source1, %source2)" },
+        { Operation::MultiplyThenAdd, "((%source1 * %source2) + %source3)" },
+        { Operation::AddThenMultiply, "((%source1 + %source2) * %source3)" },
+    };
+
+    const auto op_it = combiner_map.find(operation);
+    if (op_it == combiner_map.end())
+        return "Unknown op (%source1, %source2, %source3)";
+
+    return op_it->second;
+}
+
+std::string GetTevStageConfigColorCombinerString(const Pica::Regs::TevStageConfig& tev_stage) {
+    auto op_str = GetTevStageConfigOperationString(tev_stage.color_op);
+    op_str = ReplacePattern(op_str, "%source1", GetTevStageConfigColorSourceString(tev_stage.color_source1, tev_stage.color_modifier1));
+    op_str = ReplacePattern(op_str, "%source2", GetTevStageConfigColorSourceString(tev_stage.color_source2, tev_stage.color_modifier2));
+    return   ReplacePattern(op_str, "%source3", GetTevStageConfigColorSourceString(tev_stage.color_source3, tev_stage.color_modifier3));
+}
+
+std::string GetTevStageConfigAlphaCombinerString(const Pica::Regs::TevStageConfig& tev_stage) {
+    auto op_str = GetTevStageConfigOperationString(tev_stage.alpha_op);
+    op_str = ReplacePattern(op_str, "%source1", GetTevStageConfigAlphaSourceString(tev_stage.alpha_source1, tev_stage.alpha_modifier1));
+    op_str = ReplacePattern(op_str, "%source2", GetTevStageConfigAlphaSourceString(tev_stage.alpha_source2, tev_stage.alpha_modifier2));
+    return   ReplacePattern(op_str, "%source3", GetTevStageConfigAlphaSourceString(tev_stage.alpha_source3, tev_stage.alpha_modifier3));
+}
+
+void DumpTevStageConfig(const std::array<Pica::Regs::TevStageConfig, 6>& stages) {
     std::string stage_info = "Tev setup:\n";
     for (size_t index = 0; index < stages.size(); ++index) {
         const auto& tev_stage = stages[index];
-
-        static const std::map<Source, std::string> source_map = {
-            { Source::PrimaryColor, "PrimaryColor" },
-            { Source::Texture0, "Texture0" },
-            { Source::Texture1, "Texture1" },
-            { Source::Texture2, "Texture2" },
-            { Source::Constant, "Constant" },
-            { Source::Previous, "Previous" },
-        };
-
-        static const std::map<ColorModifier, std::string> color_modifier_map = {
-            { ColorModifier::SourceColor, { "%source.rgb" } },
-            { ColorModifier::SourceAlpha, { "%source.aaa" } },
-        };
-        static const std::map<AlphaModifier, std::string> alpha_modifier_map = {
-            { AlphaModifier::SourceAlpha, "%source.a" },
-            { AlphaModifier::OneMinusSourceAlpha, "(255 - %source.a)" },
-        };
-
-        static const std::map<Operation, std::string> combiner_map = {
-            { Operation::Replace, "%source1" },
-            { Operation::Modulate, "(%source1 * %source2) / 255" },
-            { Operation::Add, "(%source1 + %source2)" },
-            { Operation::Lerp, "lerp(%source1, %source2, %source3)" },
-        };
-
-        static auto ReplacePattern =
-                [](const std::string& input, const std::string& pattern, const std::string& replacement) -> std::string {
-                    size_t start = input.find(pattern);
-                    if (start == std::string::npos)
-                        return input;
-
-                    std::string ret = input;
-                    ret.replace(start, pattern.length(), replacement);
-                    return ret;
-                };
-        static auto GetColorSourceStr =
-                [](const Source& src, const ColorModifier& modifier) {
-                    auto src_it = source_map.find(src);
-                    std::string src_str = "Unknown";
-                    if (src_it != source_map.end())
-                        src_str = src_it->second;
-
-                    auto modifier_it = color_modifier_map.find(modifier);
-                    std::string modifier_str = "%source.????";
-                    if (modifier_it != color_modifier_map.end())
-                        modifier_str = modifier_it->second;
-
-                    return ReplacePattern(modifier_str, "%source", src_str);
-                };
-        static auto GetColorCombinerStr =
-                [](const Regs::TevStageConfig& tev_stage) {
-                    auto op_it = combiner_map.find(tev_stage.color_op);
-                    std::string op_str = "Unknown op (%source1, %source2, %source3)";
-                    if (op_it != combiner_map.end())
-                        op_str = op_it->second;
-
-                    op_str = ReplacePattern(op_str, "%source1", GetColorSourceStr(tev_stage.color_source1, tev_stage.color_modifier1));
-                    op_str = ReplacePattern(op_str, "%source2", GetColorSourceStr(tev_stage.color_source2, tev_stage.color_modifier2));
-                    return   ReplacePattern(op_str, "%source3", GetColorSourceStr(tev_stage.color_source3, tev_stage.color_modifier3));
-                };
-        static auto GetAlphaSourceStr =
-                [](const Source& src, const AlphaModifier& modifier) {
-                    auto src_it = source_map.find(src);
-                    std::string src_str = "Unknown";
-                    if (src_it != source_map.end())
-                        src_str = src_it->second;
-
-                    auto modifier_it = alpha_modifier_map.find(modifier);
-                    std::string modifier_str = "%source.????";
-                    if (modifier_it != alpha_modifier_map.end())
-                        modifier_str = modifier_it->second;
-
-                    return ReplacePattern(modifier_str, "%source", src_str);
-                };
-        static auto GetAlphaCombinerStr =
-                [](const Regs::TevStageConfig& tev_stage) {
-                    auto op_it = combiner_map.find(tev_stage.alpha_op);
-                    std::string op_str = "Unknown op (%source1, %source2, %source3)";
-                    if (op_it != combiner_map.end())
-                        op_str = op_it->second;
-
-                    op_str = ReplacePattern(op_str, "%source1", GetAlphaSourceStr(tev_stage.alpha_source1, tev_stage.alpha_modifier1));
-                    op_str = ReplacePattern(op_str, "%source2", GetAlphaSourceStr(tev_stage.alpha_source2, tev_stage.alpha_modifier2));
-                    return   ReplacePattern(op_str, "%source3", GetAlphaSourceStr(tev_stage.alpha_source3, tev_stage.alpha_modifier3));
-                };
-
-        stage_info += "Stage " + std::to_string(index) + ": " + GetColorCombinerStr(tev_stage) + "   " + GetAlphaCombinerStr(tev_stage) + "\n";
+        stage_info += "Stage " + std::to_string(index) + ": " + GetTevStageConfigColorCombinerString(tev_stage) + "   " + GetTevStageConfigAlphaCombinerString(tev_stage) + "\n";
     }
-
     LOG_TRACE(HW_GPU, "%s", stage_info.c_str());
 }
 

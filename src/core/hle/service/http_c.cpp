@@ -2,7 +2,6 @@
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
-#include "core/hle/hle.h"
 #include "core/hle/service/http_c.h"
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -47,10 +46,20 @@ const Interface::FunctionInfo FunctionTable[] = {
     {0x00220040, nullptr,                 "GetResponseStatusCode"},
     {0x002300C0, nullptr,                 "GetResponseStatusCodeTimeout"},
     {0x00240082, nullptr,                 "AddTrustedRootCA"},
+    {0x00250080, nullptr,                 "AddDefaultCert"},
+    {0x00260080, nullptr,                 "SelectRootCertChain"},
+    {0x002700C4, nullptr,                 "SetClientCert"},
+    {0x002B0080, nullptr,                 "SetSSLOpt"},
+    {0x002C0080, nullptr,                 "SetSSLClearOpt"},
+    {0x002D0000, nullptr,                 "CreateRootCertChain"},
+    {0x002E0040, nullptr,                 "DestroyRootCertChain"},
+    {0x002F0082, nullptr,                 "RootCertChainAddCert"},
+    {0x00300080, nullptr,                 "RootCertChainAddDefaultCert"},
     {0x00350186, nullptr,                 "SetDefaultProxy"},
     {0x00360000, nullptr,                 "ClearDNSCache"},
     {0x00370080, nullptr,                 "SetKeepAlive"},
-    {0x003800C0, nullptr,                 "Finalize"},
+    {0x003800C0, nullptr,                 "SetPostDataTypeSize"},
+    {0x00390000, nullptr,                 "Finalize"},
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////

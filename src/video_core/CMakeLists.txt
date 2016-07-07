@@ -11,9 +11,11 @@ set(SRCS
             pica.cpp
             primitive_assembly.cpp
             rasterizer.cpp
+            renderer_base.cpp
             shader/shader.cpp
             shader/shader_interpreter.cpp
-            utils.cpp
+            swrasterizer.cpp
+            vertex_loader.cpp
             video_core.cpp
             )
 
@@ -30,14 +32,18 @@ set(HEADERS
             clipper.h
             command_processor.h
             gpu_debugger.h
-            hwrasterizer_base.h
             pica.h
+            pica_state.h
+            pica_types.h
             primitive_assembly.h
             rasterizer.h
+            rasterizer_interface.h
             renderer_base.h
             shader/shader.h
             shader/shader_interpreter.h
+            swrasterizer.h
             utils.h
+            vertex_loader.h
             video_core.h
             )
 

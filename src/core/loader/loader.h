@@ -74,7 +74,7 @@ enum class ResultStatus {
     ErrorEncrypted,
 };
 
-static inline u32 MakeMagic(char a, char b, char c, char d) {
+constexpr u32 MakeMagic(char a, char b, char c, char d) {
     return a | b << 8 | c << 16 | d << 24;
 }
 
@@ -83,6 +83,12 @@ class AppLoader : NonCopyable {
 public:
     AppLoader(FileUtil::IOFile&& file) : file(std::move(file)) { }
     virtual ~AppLoader() { }
+
+    /**
+     * Returns the type of this file
+     * @return FileType corresponding to the loaded file
+     */
+    virtual FileType GetFileType() = 0;
 
     /**
      * Load the application
@@ -150,10 +156,10 @@ protected:
 extern const std::initializer_list<Kernel::AddressMapping> default_address_mappings;
 
 /**
- * Identifies and loads a bootable file
+ * Identifies a bootable file and return a suitable loader
  * @param filename String filename of bootable file
- * @return ResultStatus result of function
+ * @return best loader for this file
  */
-ResultStatus LoadFile(const std::string& filename);
+std::unique_ptr<AppLoader> GetLoader(const std::string& filename);
 
 } // namespace

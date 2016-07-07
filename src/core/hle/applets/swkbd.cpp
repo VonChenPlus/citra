@@ -24,13 +24,6 @@
 namespace HLE {
 namespace Applets {
 
-SoftwareKeyboard::SoftwareKeyboard(Service::APT::AppletId id) : Applet(id), started(false) {
-    // Create the SharedMemory that will hold the framebuffer data
-    // TODO(Subv): What size should we use here?
-    using Kernel::MemoryPermission;
-    framebuffer_memory = Kernel::SharedMemory::Create(0x1000, MemoryPermission::ReadWrite, MemoryPermission::ReadWrite, "SoftwareKeyboard Memory");
-}
-
 ResultCode SoftwareKeyboard::ReceiveParameter(Service::APT::MessageParameter const& parameter) {
     if (parameter.signal != static_cast<u32>(Service::APT::SignalType::LibAppJustStarted)) {
         LOG_ERROR(Service_APT, "unsupported signal %u", parameter.signal);
@@ -39,11 +32,25 @@ ResultCode SoftwareKeyboard::ReceiveParameter(Service::APT::MessageParameter con
         return ResultCode(-1);
     }
 
+    // The LibAppJustStarted message contains a buffer with the size of the framebuffer shared memory.
+    // Create the SharedMemory that will hold the framebuffer data
+    Service::APT::CaptureBufferInfo capture_info;
+    ASSERT(sizeof(capture_info) == parameter.buffer.size());
+
+    memcpy(&capture_info, parameter.buffer.data(), sizeof(capture_info));
+
+    using Kernel::MemoryPermission;
+    // Allocate a heap block of the required size for this applet.
+    heap_memory = std::make_shared<std::vector<u8>>(capture_info.size);
+    // Create a SharedMemory that directly points to this heap block.
+    framebuffer_memory = Kernel::SharedMemory::CreateForApplet(heap_memory, 0, heap_memory->size(),
+                                                               MemoryPermission::ReadWrite, MemoryPermission::ReadWrite,
+                                                               "SoftwareKeyboard Memory");
+
+    // Send the response message with the newly created SharedMemory
     Service::APT::MessageParameter result;
-    // The buffer passed in parameter contains the data returned by GSPGPU::ImportDisplayCaptureInfo
     result.signal = static_cast<u32>(Service::APT::SignalType::LibAppFinished);
-    result.data = nullptr;
-    result.buffer_size = 0;
+    result.buffer.clear();
     result.destination_id = static_cast<u32>(Service::APT::AppletId::Application);
     result.sender_id = static_cast<u32>(id);
     result.object = framebuffer_memory;
@@ -53,9 +60,9 @@ ResultCode SoftwareKeyboard::ReceiveParameter(Service::APT::MessageParameter con
 }
 
 ResultCode SoftwareKeyboard::StartImpl(Service::APT::AppletStartupParameter const& parameter) {
-    ASSERT_MSG(parameter.buffer_size == sizeof(config), "The size of the parameter (SoftwareKeyboardConfig) is wrong");
+    ASSERT_MSG(parameter.buffer.size() == sizeof(config), "The size of the parameter (SoftwareKeyboardConfig) is wrong");
 
-    memcpy(&config, parameter.data, parameter.buffer_size);
+    memcpy(&config, parameter.buffer.data(), parameter.buffer.size());
     text_memory = boost::static_pointer_cast<Kernel::SharedMemory, Kernel::Object>(parameter.object);
 
     // TODO(Subv): Verify if this is the correct behavior
@@ -91,7 +98,7 @@ void SoftwareKeyboard::DrawScreenKeyboard() {
     auto info = bottom_screen->framebuffer_info[bottom_screen->index];
 
     // TODO(Subv): Draw the HLE keyboard, for now just zero-fill the framebuffer
-    memset(Memory::GetPointer(info.address_left), 0, info.stride * 320);
+    Memory::ZeroBlock(info.address_left, info.stride * 320);
 
     GSP_GPU::SetBufferSwap(1, info);
 }
@@ -99,8 +106,8 @@ void SoftwareKeyboard::DrawScreenKeyboard() {
 void SoftwareKeyboard::Finalize() {
     // Let the application know that we're closing
     Service::APT::MessageParameter message;
-    message.buffer_size = sizeof(SoftwareKeyboardConfig);
-    message.data = reinterpret_cast<u8*>(&config);
+    message.buffer.resize(sizeof(SoftwareKeyboardConfig));
+    std::memcpy(message.buffer.data(), &config, message.buffer.size());
     message.signal = static_cast<u32>(Service::APT::SignalType::LibAppClosed);
     message.destination_id = static_cast<u32>(Service::APT::AppletId::Application);
     message.sender_id = static_cast<u32>(id);

@@ -49,6 +49,7 @@ enum class Class : ClassType {
     Service,                    ///< HLE implementation of system services. Each major service
                                 ///  should have its own subclass.
     Service_SRV,                ///< The SRV (Service Directory) implementation
+    Service_FRD,                ///< The FRD (Friends) service
     Service_FS,                 ///< The FS (Filesystem) service implementation
     Service_ERR,                ///< The ERR (Error) port implementation
     Service_APT,                ///< The APT (Applets) service
@@ -57,13 +58,17 @@ enum class Class : ClassType {
     Service_AM,                 ///< The AM (Application manager) service
     Service_PTM,                ///< The PTM (Power status & misc.) service
     Service_LDR,                ///< The LDR (3ds dll loader) service
+    Service_NDM,                ///< The NDM (Network daemon manager) service
     Service_NIM,                ///< The NIM (Network interface manager) service
     Service_NWM,                ///< The NWM (Network wlan manager) service
     Service_CAM,                ///< The CAM (Camera) service
+    Service_CECD,               ///< The CECD (StreetPass) service
     Service_CFG,                ///< The CFG (Configuration) service
     Service_DSP,                ///< The DSP (DSP control) service
+    Service_DLP,                ///< The DLP (Download Play) service
     Service_HID,                ///< The HID (Human interface device) service
     Service_SOC,                ///< The SOC (Socket) service
+    Service_IR,                 ///< The IR service
     Service_Y2R,                ///< The Y2R (YUV to RGB conversion) service
     HW,                         ///< Low-level hardware emulation
     HW_Memory,                  ///< Memory-map and address translation
@@ -73,6 +78,9 @@ enum class Class : ClassType {
     Render,                     ///< Emulator video output and hardware acceleration
     Render_Software,            ///< Software renderer backend
     Render_OpenGL,              ///< OpenGL backend
+    Audio,                      ///< Audio emulation
+    Audio_DSP,                  ///< The HLE implementation of the DSP
+    Audio_Sink,                 ///< Emulator audio output backend
     Loader,                     ///< ROM loader
 
     Count ///< Total number of logging classes

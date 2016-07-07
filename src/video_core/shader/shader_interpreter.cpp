@@ -2,11 +2,20 @@
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
-#include <common/file_util.h>
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <numeric>
 
 #include <nihstro/shader_bytecode.h>
 
-#include "video_core/pica.h"
+#include "common/assert.h"
+#include "common/common_types.h"
+#include "common/logging/log.h"
+#include "common/vector_math.h"
+
+#include "video_core/pica_state.h"
+#include "video_core/pica_types.h"
 #include "video_core/shader/shader.h"
 #include "video_core/shader/shader_interpreter.h"
 
@@ -20,8 +29,24 @@ namespace Pica {
 
 namespace Shader {
 
+constexpr u32 INVALID_ADDRESS = 0xFFFFFFFF;
+
+struct CallStackElement {
+    u32 final_address;  // Address upon which we jump to return_address
+    u32 return_address; // Where to jump when leaving scope
+    u8 repeat_counter;  // How often to repeat until this call stack element is removed
+    u8 loop_increment;  // Which value to add to the loop counter after an iteration
+                        // TODO: Should this be a signed value? Does it even matter?
+    u32 loop_address;   // The address where we'll return to after each loop iteration
+};
+
 template<bool Debug>
-void RunInterpreter(UnitState<Debug>& state) {
+void RunInterpreter(const ShaderSetup& setup, UnitState<Debug>& state, unsigned offset) {
+    // TODO: Is there a maximal size for this?
+    boost::container::static_vector<CallStackElement, 16> call_stack;
+
+    u32 program_counter = offset;
+
     const auto& uniforms = g_state.vs.uniforms;
     const auto& swizzle_data = g_state.vs.swizzle_data;
     const auto& program_code = g_state.vs.program_code;
@@ -32,16 +57,16 @@ void RunInterpreter(UnitState<Debug>& state) {
     unsigned iteration = 0;
     bool exit_loop = false;
     while (!exit_loop) {
-        if (!state.call_stack.empty()) {
-            auto& top = state.call_stack.back();
-            if (state.program_counter == top.final_address) {
+        if (!call_stack.empty()) {
+            auto& top = call_stack.back();
+            if (program_counter == top.final_address) {
                 state.address_registers[2] += top.loop_increment;
 
                 if (top.repeat_counter-- == 0) {
-                    state.program_counter = top.return_address;
-                    state.call_stack.pop_back();
+                    program_counter = top.return_address;
+                    call_stack.pop_back();
                 } else {
-                    state.program_counter = top.loop_address;
+                    program_counter = top.loop_address;
                 }
 
                 // TODO: Is "trying again" accurate to hardware?
@@ -49,20 +74,20 @@ void RunInterpreter(UnitState<Debug>& state) {
             }
         }
 
-        const Instruction instr = { program_code[state.program_counter] };
+        const Instruction instr = { program_code[program_counter] };
         const SwizzlePattern swizzle = { swizzle_data[instr.common.operand_desc_id] };
 
-        static auto call = [](UnitState<Debug>& state, u32 offset, u32 num_instructions,
+        static auto call = [&program_counter, &call_stack](UnitState<Debug>& state, u32 offset, u32 num_instructions,
                               u32 return_offset, u8 repeat_count, u8 loop_increment) {
-            state.program_counter = offset - 1; // -1 to make sure when incrementing the PC we end up at the correct offset
-            ASSERT(state.call_stack.size() < state.call_stack.capacity());
-            state.call_stack.push_back({ offset + num_instructions, return_offset, repeat_count, loop_increment, offset });
+            program_counter = offset - 1; // -1 to make sure when incrementing the PC we end up at the correct offset
+            ASSERT(call_stack.size() < call_stack.capacity());
+            call_stack.push_back({ offset + num_instructions, return_offset, repeat_count, loop_increment, offset });
         };
-        Record<DebugDataRecord::CUR_INSTR>(state.debug, iteration, state.program_counter);
+        Record<DebugDataRecord::CUR_INSTR>(state.debug, iteration, program_counter);
         if (iteration > 0)
-            Record<DebugDataRecord::NEXT_INSTR>(state.debug, iteration - 1, state.program_counter);
+            Record<DebugDataRecord::NEXT_INSTR>(state.debug, iteration - 1, program_counter);
 
-        state.debug.max_offset = std::max<u32>(state.debug.max_offset, 1 + state.program_counter);
+        state.debug.max_offset = std::max<u32>(state.debug.max_offset, 1 + program_counter);
 
         auto LookupSourceRegister = [&](const SourceRegister& source_reg) -> const float24* {
             switch (source_reg.GetRegisterType()) {
@@ -119,7 +144,7 @@ void RunInterpreter(UnitState<Debug>& state) {
                 src2[3] = src2[3] * float24::FromFloat32(-1);
             }
 
-            float24* dest = (instr.common.dest.Value() < 0x10) ? &state.registers.output[instr.common.dest.Value().GetIndex()][0]
+            float24* dest = (instr.common.dest.Value() < 0x10) ? &state.output_registers.value[instr.common.dest.Value().GetIndex()][0]
                         : (instr.common.dest.Value() < 0x20) ? &state.registers.temporary[instr.common.dest.Value().GetIndex()][0]
                         : dummy_vec4_float24;
 
@@ -213,10 +238,8 @@ void RunInterpreter(UnitState<Debug>& state) {
                 if (opcode == OpCode::Id::DPH || opcode == OpCode::Id::DPHI)
                     src1[3] = float24::FromFloat32(1.0f);
 
-                float24 dot = float24::FromFloat32(0.f);
                 int num_components = (opcode == OpCode::Id::DP3) ? 3 : 4;
-                for (int i = 0; i < num_components; ++i)
-                    dot = dot + src1[i] * src2[i];
+                float24 dot = std::inner_product(src1, src1 + num_components, src2, float24::FromFloat32(0.f));
 
                 for (int i = 0; i < 4; ++i) {
                     if (!swizzle.DestComponentEnabled(i))
@@ -408,13 +431,16 @@ void RunInterpreter(UnitState<Debug>& state) {
         {
             if ((instr.opcode.Value().EffectiveOpCode() == OpCode::Id::MAD) ||
                 (instr.opcode.Value().EffectiveOpCode() == OpCode::Id::MADI)) {
-                const SwizzlePattern& swizzle = *(SwizzlePattern*)&swizzle_data[instr.mad.operand_desc_id];
+                const SwizzlePattern& swizzle = *reinterpret_cast<const SwizzlePattern*>(&swizzle_data[instr.mad.operand_desc_id]);
 
                 bool is_inverted = (instr.opcode.Value().EffectiveOpCode() == OpCode::Id::MADI);
 
+                const int address_offset = (instr.mad.address_register_index == 0)
+                                           ? 0 : state.address_registers[instr.mad.address_register_index - 1];
+
                 const float24* src1_ = LookupSourceRegister(instr.mad.GetSrc1(is_inverted));
-                const float24* src2_ = LookupSourceRegister(instr.mad.GetSrc2(is_inverted));
-                const float24* src3_ = LookupSourceRegister(instr.mad.GetSrc3(is_inverted));
+                const float24* src2_ = LookupSourceRegister(instr.mad.GetSrc2(is_inverted) + (!is_inverted * address_offset));
+                const float24* src3_ = LookupSourceRegister(instr.mad.GetSrc3(is_inverted) + ( is_inverted * address_offset));
 
                 const bool negate_src1 = ((bool)swizzle.negate_src1 != false);
                 const bool negate_src2 = ((bool)swizzle.negate_src2 != false);
@@ -457,7 +483,7 @@ void RunInterpreter(UnitState<Debug>& state) {
                     src3[3] = src3[3] * float24::FromFloat32(-1);
                 }
 
-                float24* dest = (instr.mad.dest.Value() < 0x10) ? &state.registers.output[instr.mad.dest.Value().GetIndex()][0]
+                float24* dest = (instr.mad.dest.Value() < 0x10) ? &state.output_registers.value[instr.mad.dest.Value().GetIndex()][0]
                             : (instr.mad.dest.Value() < 0x20) ? &state.registers.temporary[instr.mad.dest.Value().GetIndex()][0]
                             : dummy_vec4_float24;
 
@@ -509,14 +535,15 @@ void RunInterpreter(UnitState<Debug>& state) {
             case OpCode::Id::JMPC:
                 Record<DebugDataRecord::COND_CMP_IN>(state.debug, iteration, state.conditional_code);
                 if (evaluate_condition(state, instr.flow_control.refx, instr.flow_control.refy, instr.flow_control)) {
-                    state.program_counter = instr.flow_control.dest_offset - 1;
+                    program_counter = instr.flow_control.dest_offset - 1;
                 }
                 break;
 
             case OpCode::Id::JMPU:
                 Record<DebugDataRecord::COND_BOOL_IN>(state.debug, iteration, uniforms.b[instr.flow_control.bool_uniform_id]);
-                if (uniforms.b[instr.flow_control.bool_uniform_id]) {
-                    state.program_counter = instr.flow_control.dest_offset - 1;
+
+                if (uniforms.b[instr.flow_control.bool_uniform_id] == !(instr.flow_control.num_instructions & 1)) {
+                    program_counter = instr.flow_control.dest_offset - 1;
                 }
                 break;
 
@@ -524,7 +551,7 @@ void RunInterpreter(UnitState<Debug>& state) {
                 call(state,
                      instr.flow_control.dest_offset,
                      instr.flow_control.num_instructions,
-                     state.program_counter + 1, 0, 0);
+                     program_counter + 1, 0, 0);
                 break;
 
             case OpCode::Id::CALLU:
@@ -533,7 +560,7 @@ void RunInterpreter(UnitState<Debug>& state) {
                     call(state,
                         instr.flow_control.dest_offset,
                         instr.flow_control.num_instructions,
-                        state.program_counter + 1, 0, 0);
+                        program_counter + 1, 0, 0);
                 }
                 break;
 
@@ -543,7 +570,7 @@ void RunInterpreter(UnitState<Debug>& state) {
                     call(state,
                         instr.flow_control.dest_offset,
                         instr.flow_control.num_instructions,
-                        state.program_counter + 1, 0, 0);
+                        program_counter + 1, 0, 0);
                 }
                 break;
 
@@ -554,8 +581,8 @@ void RunInterpreter(UnitState<Debug>& state) {
                 Record<DebugDataRecord::COND_BOOL_IN>(state.debug, iteration, uniforms.b[instr.flow_control.bool_uniform_id]);
                 if (uniforms.b[instr.flow_control.bool_uniform_id]) {
                     call(state,
-                         state.program_counter + 1,
-                         instr.flow_control.dest_offset - state.program_counter - 1,
+                         program_counter + 1,
+                         instr.flow_control.dest_offset - program_counter - 1,
                          instr.flow_control.dest_offset + instr.flow_control.num_instructions, 0, 0);
                 } else {
                     call(state,
@@ -573,8 +600,8 @@ void RunInterpreter(UnitState<Debug>& state) {
                 Record<DebugDataRecord::COND_CMP_IN>(state.debug, iteration, state.conditional_code);
                 if (evaluate_condition(state, instr.flow_control.refx, instr.flow_control.refy, instr.flow_control)) {
                     call(state,
-                         state.program_counter + 1,
-                         instr.flow_control.dest_offset - state.program_counter - 1,
+                         program_counter + 1,
+                         instr.flow_control.dest_offset - program_counter - 1,
                          instr.flow_control.dest_offset + instr.flow_control.num_instructions, 0, 0);
                 } else {
                     call(state,
@@ -596,8 +623,8 @@ void RunInterpreter(UnitState<Debug>& state) {
 
                 Record<DebugDataRecord::LOOP_INT_IN>(state.debug, iteration, loop_param);
                 call(state,
-                     state.program_counter + 1,
-                     instr.flow_control.dest_offset - state.program_counter + 1,
+                     program_counter + 1,
+                     instr.flow_control.dest_offset - program_counter + 1,
                      instr.flow_control.dest_offset + 1,
                      loop_param.x,
                      loop_param.z);
@@ -614,14 +641,14 @@ void RunInterpreter(UnitState<Debug>& state) {
         }
         }
 
-        ++state.program_counter;
+        ++program_counter;
         ++iteration;
     }
 }
 
 // Explicit instantiation
-template void RunInterpreter(UnitState<false>& state);
-template void RunInterpreter(UnitState<true>& state);
+template void RunInterpreter(const ShaderSetup& setup, UnitState<false>& state, unsigned offset);
+template void RunInterpreter(const ShaderSetup& setup, UnitState<true>& state, unsigned offset);
 
 } // namespace
 

@@ -5,6 +5,7 @@
 #pragma once
 
 #include "common/common_types.h"
+#include "common/swap.h"
 
 #include "core/hle/kernel/kernel.h"
 
@@ -19,17 +20,29 @@ struct MessageParameter {
     u32 sender_id = 0;
     u32 destination_id = 0;
     u32 signal = 0;
-    u32 buffer_size = 0;
     Kernel::SharedPtr<Kernel::Object> object = nullptr;
-    u8* data = nullptr;
+    std::vector<u8> buffer;
 };
 
 /// Holds information about the parameters used in StartLibraryApplet
 struct AppletStartupParameter {
-    u32 buffer_size = 0;
     Kernel::SharedPtr<Kernel::Object> object = nullptr;
-    u8* data = nullptr;
+    std::vector<u8> buffer;
 };
+
+/// Used by the application to pass information about the current framebuffer to applets.
+struct CaptureBufferInfo {
+    u32_le size;
+    u8 is_3d;
+    INSERT_PADDING_BYTES(0x3); // Padding for alignment
+    u32_le top_screen_left_offset;
+    u32_le top_screen_right_offset;
+    u32_le top_screen_format;
+    u32_le bottom_screen_left_offset;
+    u32_le bottom_screen_right_offset;
+    u32_le bottom_screen_format;
+};
+static_assert(sizeof(CaptureBufferInfo) == 0x20, "CaptureBufferInfo struct has incorrect size");
 
 /// Signals used by APT functions
 enum class SignalType : u32 {
@@ -53,8 +66,10 @@ enum class AppletId : u32 {
     InstructionManual  = 0x115,
     Notifications      = 0x116,
     Miiverse           = 0x117,
+    MiiversePost       = 0x118,
+    AmiiboSettings     = 0x119,
     SoftwareKeyboard1  = 0x201,
-    Ed                 = 0x202,
+    Ed1                = 0x202,
     PnoteApp           = 0x204,
     SnoteApp           = 0x205,
     Error              = 0x206,
@@ -64,6 +79,19 @@ enum class AppletId : u32 {
     Application        = 0x300,
     AnyLibraryApplet   = 0x400,
     SoftwareKeyboard2  = 0x401,
+    Ed2                = 0x402,
+    PnoteApp2          = 0x404,
+    SnoteApp2          = 0x405,
+    Error2             = 0x406,
+    Mint2              = 0x407,
+    Extrapad2          = 0x408,
+    Memolib2           = 0x409,
+};
+
+enum class StartupArgumentType : u32 {
+    OtherApp   = 0,
+    Restart    = 1,
+    OtherMedia = 2,
 };
 
 /// Send a parameter to the currently-running application, which will read it via ReceiveParameter
@@ -131,6 +159,20 @@ void Enable(Service::Interface* self);
  *      5 : AppID of currently active app
  */
 void GetAppletManInfo(Service::Interface* self);
+
+/**
+ * APT::GetAppletInfo service function.
+ *  Inputs:
+ *      1 : AppId
+ *  Outputs:
+ *      1 : Result of function, 0 on success, otherwise error code
+ *      2-3 : Title ID
+ *      4 : Media Type
+ *      5 : Registered
+ *      6 : Loaded
+ *      7 : Attributes
+ */
+void GetAppletInfo(Service::Interface* self);
 
 /**
  * APT::IsRegistered service function. This returns whether the specified AppID is registered with NS yet.
@@ -328,6 +370,61 @@ void PreloadLibraryApplet(Service::Interface* self);
  *      1 : Result of function, 0 on success, otherwise error code
  */
 void StartLibraryApplet(Service::Interface* self);
+
+/**
+ * APT::GetStartupArgument service function
+ *  Inputs:
+ *      1 : Parameter Size (capped to 0x300)
+ *      2 : StartupArgumentType
+ *  Outputs:
+ *      0 : Return header
+ *      1 : u8, Exists (0 = does not exist, 1 = exists)
+ */
+void GetStartupArgument(Service::Interface* self);
+
+/**
+ * APT::SetNSStateField service function
+ *  Inputs:
+ *      1 : u8 NS state field
+ *  Outputs:
+ *      1 : Result of function, 0 on success, otherwise error code
+ *  Note:
+ *      This writes the input u8 to a NS state field.
+ */
+void SetNSStateField(Service::Interface* self);
+
+/**
+ * APT::GetNSStateField service function
+ *  Outputs:
+ *      1 : Result of function, 0 on success, otherwise error code
+ *      8 : u8 NS state field
+ *  Note:
+ *      This returns a u8 NS state field(which can be set by cmd 0x00550040), at cmdreply+8.
+ */
+void GetNSStateField(Service::Interface* self);
+
+/**
+ * APT::CheckNew3DSApp service function
+ *  Outputs:
+ *      1: Result code, 0 on success, otherwise error code
+ *      2: u8 output: 0 = Old3DS, 1 = New3DS.
+ *  Note:
+ *  This uses PTMSYSM:CheckNew3DS.
+ *  When a certain NS state field is non-zero, the output value is zero,
+ *  Otherwise the output is from PTMSYSM:CheckNew3DS.
+ *  Normally this NS state field is zero, however this state field is set to 1
+ *  when APT:PrepareToStartApplication is used with flags bit8 is set.
+ */
+void CheckNew3DSApp(Service::Interface* self);
+
+/**
+ * Wrapper for PTMSYSM:CheckNew3DS
+ * APT::CheckNew3DS service function
+ *  Outputs:
+ *      1: Result code, 0 on success, otherwise error code
+ *      2: u8 output: 0 = Old3DS, 1 = New3DS.
+ */
+void CheckNew3DS(Service::Interface* self);
 
 /// Initialize the APT service
 void Init();

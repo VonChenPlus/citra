@@ -2,7 +2,6 @@
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
-#include "core/hle/hle.h"
 #include "core/hle/service/pm_app.h"
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -19,6 +18,10 @@ const Interface::FunctionInfo FunctionTable[] = {
     {0x00070042, nullptr,                 "GetFIRMLaunchParams"},
     {0x00080100, nullptr,                 "GetTitleExheaderFlags"},
     {0x00090042, nullptr,                 "SetFIRMLaunchParams"},
+    {0x000A0140, nullptr,                 "SetResourceLimit"},
+    {0x000B0140, nullptr,                 "GetResourceLimitMax"},
+    {0x000C0080, nullptr,                 "UnregisterProcess"},
+    {0x000D0240, nullptr,                 "LaunchTitleUpdate"},
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////

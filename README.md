@@ -1,3 +1,5 @@
+**BEFORE FILING AN ISSUE, READ THE RELEVANT SECTION IN THE [CONTRIBUTING](https://github.com/citra-emu/citra/blob/master/CONTRIBUTING.md#reporting-issues) FILE!!!**
+
 Citra Emulator
 ==============
 [![Travis CI Build Status](https://travis-ci.org/citra-emu/citra.svg)](https://travis-ci.org/citra-emu/citra)
@@ -7,17 +9,21 @@ Citra is an experimental open-source Nintendo 3DS emulator/debugger written in C
 
 Citra is licensed under the GPLv2 (or any later version). Refer to the license.txt file included. Please read the [FAQ](https://github.com/citra-emu/citra/wiki/FAQ) before getting started with the project.
 
+Check out our [website](https://citra-emu.org/)!
+
 For development discussion, please join us @ #citra on freenode.
 
 ### Development
+
+Most of the development happens on GitHub. It's also where [our central repository](https://github.com/citra-emu/citra) is hosted.
 
 If you want to contribute please take a look at the [Contributor's Guide](CONTRIBUTING.md), [TODO list](https://docs.google.com/document/d/1SWIop0uBI9IW8VGg97TAtoT_CHNoP42FzYmvG1F4QDA) and [Developer Information](https://github.com/citra-emu/citra/wiki/Developer-Information). You should as well contact any of the developers in the forum in order to know about the current state of the emulator.
 
 ### Building
 
-* __Windows__: [Windows Build](https://github.com/citra-emu/citra/wiki/Windows-Build)
-* __Linux__: [Linux Build](https://github.com/citra-emu/citra/wiki/Linux-Build)
-* __OSX__: [OS X Build](https://github.com/citra-emu/citra/wiki/OS-X-Build)
+* __Windows__: [Windows Build](https://github.com/citra-emu/citra/wiki/Building-For-Windows)
+* __Linux__: [Linux Build](https://github.com/citra-emu/citra/wiki/Building-For-Linux)
+* __OSX__: [OS X Build](https://github.com/citra-emu/citra/wiki/Building-For-OS-X)
 
 
 ### Support

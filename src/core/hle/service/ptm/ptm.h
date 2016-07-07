@@ -4,11 +4,12 @@
 
 #pragma once
 
-#include <array>
-#include "core/hle/service/service.h"
-#include "core/hle/result.h"
+#include "common/common_types.h"
 
 namespace Service {
+
+class Interface;
+
 namespace PTM {
 
 /// Charge levels used by PTM functions
@@ -86,6 +87,14 @@ void GetTotalStepCount(Interface* self);
  *      2: Whether the system is going through a power off
  */
 void IsLegacyPowerOff(Interface* self);
+
+/**
+ * PTM::CheckNew3DS service function
+ *  Outputs:
+ *      1: Result code, 0 on success, otherwise error code
+ *      2: u8 output: 0 = Old3DS, 1 = New3DS.
+ */
+void CheckNew3DS(Interface* self);
 
 /// Initialize the PTM service
 void Init();

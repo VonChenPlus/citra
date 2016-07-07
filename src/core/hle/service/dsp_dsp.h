@@ -8,6 +8,12 @@
 
 #include "core/hle/service/service.h"
 
+namespace DSP {
+namespace HLE {
+enum class DspPipe;
+}
+}
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 // Namespace DSP_DSP
 
@@ -23,7 +29,10 @@ public:
     }
 };
 
-/// Signals that a DSP interrupt has occurred to userland code
-void SignalInterrupt();
+/**
+ * Signal a specific DSP related interrupt of type == InterruptType::Pipe, pipe == pipe.
+ * @param pipe The DSP pipe for which to signal an interrupt for.
+ */
+void SignalPipeInterrupt(DSP::HLE::DspPipe pipe);
 
-} // namespace
+} // namespace DSP_DSP

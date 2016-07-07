@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cstring>
 #include <unordered_map>
+#include <vector>
 
 #include "common/assert.h"
 #include "common/bit_field.h"
@@ -150,6 +151,34 @@ static int TranslateError(int error) {
     return error;
 }
 
+/// Holds the translation from system network socket options to 3DS network socket options
+/// Note: -1 = No effect/unavailable
+static const std::unordered_map<int, int> sockopt_map = { {
+    { 0x0004,   SO_REUSEADDR },
+    { 0x0080,   -1 },
+    { 0x0100,   -1 },
+    { 0x1001,   SO_SNDBUF },
+    { 0x1002,   SO_RCVBUF },
+    { 0x1003,   -1 },
+#ifdef _WIN32
+    /// Unsupported in WinSock2
+    { 0x1004,   -1 },
+#else
+    { 0x1004,   SO_RCVLOWAT },
+#endif
+    { 0x1008,   SO_TYPE },
+    { 0x1009,   SO_ERROR },
+}};
+
+/// Converts a socket option from 3ds-specific to platform-specific
+static int TranslateSockOpt(int console_opt_name) {
+    auto found = sockopt_map.find(console_opt_name);
+    if (found != sockopt_map.end()) {
+        return found->second;
+    }
+    return console_opt_name;
+}
+
 /// Holds information about a particular socket
 struct SocketHolder {
     u32 socket_fd; ///< The socket descriptor
@@ -178,17 +207,17 @@ struct CTRPollFD {
         static Events TranslateTo3DS(u32 input_event) {
             Events ev = {};
             if (input_event & POLLIN)
-                ev.pollin = 1;
+                ev.pollin.Assign(1);
             if (input_event & POLLPRI)
-                ev.pollpri = 1;
+                ev.pollpri.Assign(1);
             if (input_event & POLLHUP)
-                ev.pollhup = 1;
+                ev.pollhup.Assign(1);
             if (input_event & POLLERR)
-                ev.pollerr = 1;
+                ev.pollerr.Assign(1);
             if (input_event & POLLOUT)
-                ev.pollout = 1;
+                ev.pollout.Assign(1);
             if (input_event & POLLNVAL)
-                ev.pollnval = 1;
+                ev.pollnval.Assign(1);
             return ev;
         }
 
@@ -344,14 +373,18 @@ static void Bind(Service::Interface* self) {
     u32* cmd_buffer = Kernel::GetCommandBuffer();
     u32 socket_handle = cmd_buffer[1];
     u32 len = cmd_buffer[2];
-    CTRSockAddr* ctr_sock_addr = reinterpret_cast<CTRSockAddr*>(Memory::GetPointer(cmd_buffer[6]));
 
-    if (ctr_sock_addr == nullptr) {
+    // Virtual address of the sock_addr structure
+    VAddr sock_addr_addr = cmd_buffer[6];
+    if (!Memory::IsValidVirtualAddress(sock_addr_addr)) {
         cmd_buffer[1] = -1; // TODO(Subv): Correct code
         return;
     }
 
-    sockaddr sock_addr = CTRSockAddr::ToPlatform(*ctr_sock_addr);
+    CTRSockAddr ctr_sock_addr;
+    Memory::ReadBlock(sock_addr_addr, reinterpret_cast<u8*>(&ctr_sock_addr), sizeof(CTRSockAddr));
+
+    sockaddr sock_addr = CTRSockAddr::ToPlatform(ctr_sock_addr);
 
     int res = ::bind(socket_handle, &sock_addr, std::max<u32>(sizeof(sock_addr), len));
 
@@ -467,7 +500,7 @@ static void Accept(Service::Interface* self) {
         result = TranslateError(GET_ERRNO);
     } else {
         CTRSockAddr ctr_addr = CTRSockAddr::FromPlatform(addr);
-        Memory::WriteBlock(cmd_buffer[0x104 >> 2], (const u8*)&ctr_addr, max_addr_len);
+        Memory::WriteBlock(cmd_buffer[0x104 >> 2], &ctr_addr, sizeof(ctr_addr));
     }
 
     cmd_buffer[0] = IPC::MakeHeader(4, 2, 2);
@@ -518,20 +551,31 @@ static void SendTo(Service::Interface* self) {
     u32 flags = cmd_buffer[3];
     u32 addr_len = cmd_buffer[4];
 
-    u8* input_buff = Memory::GetPointer(cmd_buffer[8]);
-    CTRSockAddr* ctr_dest_addr = reinterpret_cast<CTRSockAddr*>(Memory::GetPointer(cmd_buffer[10]));
-
-    if (ctr_dest_addr == nullptr) {
+    VAddr input_buff_address = cmd_buffer[8];
+    if (!Memory::IsValidVirtualAddress(input_buff_address)) {
         cmd_buffer[1] = -1; // TODO(Subv): Find the right error code
         return;
     }
 
+    // Memory address of the dest_addr structure
+    VAddr dest_addr_addr = cmd_buffer[10];
+    if (!Memory::IsValidVirtualAddress(dest_addr_addr)) {
+        cmd_buffer[1] = -1; // TODO(Subv): Find the right error code
+        return;
+    }
+
+    std::vector<u8> input_buff(len);
+    Memory::ReadBlock(input_buff_address, input_buff.data(), input_buff.size());
+
+    CTRSockAddr ctr_dest_addr;
+    Memory::ReadBlock(dest_addr_addr, &ctr_dest_addr, sizeof(ctr_dest_addr));
+
     int ret = -1;
     if (addr_len > 0) {
-        sockaddr dest_addr = CTRSockAddr::ToPlatform(*ctr_dest_addr);
-        ret = ::sendto(socket_handle, (const char*)input_buff, len, flags, &dest_addr, sizeof(dest_addr));
+        sockaddr dest_addr = CTRSockAddr::ToPlatform(ctr_dest_addr);
+        ret = ::sendto(socket_handle, reinterpret_cast<const char*>(input_buff.data()), len, flags, &dest_addr, sizeof(dest_addr));
     } else {
-        ret = ::sendto(socket_handle, (const char*)input_buff, len, flags, nullptr, 0);
+        ret = ::sendto(socket_handle, reinterpret_cast<const char*>(input_buff.data()), len, flags, nullptr, 0);
     }
 
     int result = 0;
@@ -552,14 +596,34 @@ static void RecvFrom(Service::Interface* self) {
     u32 flags = cmd_buffer[3];
     socklen_t addr_len = static_cast<socklen_t>(cmd_buffer[4]);
 
-    u8* output_buff = Memory::GetPointer(cmd_buffer[0x104 >> 2]);
+    struct
+    {
+        u32 output_buffer_descriptor;
+        u32 output_buffer_addr;
+        u32 address_buffer_descriptor;
+        u32 output_src_address_buffer;
+    } buffer_parameters;
+
+    std::memcpy(&buffer_parameters, &cmd_buffer[64], sizeof(buffer_parameters));
+
+    if (!Memory::IsValidVirtualAddress(buffer_parameters.output_buffer_addr)) {
+        cmd_buffer[1] = -1; // TODO(Subv): Find the right error code
+        return;
+    }
+
+    if (!Memory::IsValidVirtualAddress(buffer_parameters.output_src_address_buffer)) {
+        cmd_buffer[1] = -1; // TODO(Subv): Find the right error code
+        return;
+    }
+
+    std::vector<u8> output_buff(len);
     sockaddr src_addr;
     socklen_t src_addr_len = sizeof(src_addr);
-    int ret = ::recvfrom(socket_handle, (char*)output_buff, len, flags, &src_addr, &src_addr_len);
+    int ret = ::recvfrom(socket_handle, reinterpret_cast<char*>(output_buff.data()), len, flags, &src_addr, &src_addr_len);
 
-    if (cmd_buffer[0x1A0 >> 2] != 0) {
-        CTRSockAddr* ctr_src_addr = reinterpret_cast<CTRSockAddr*>(Memory::GetPointer(cmd_buffer[0x1A0 >> 2]));
-        *ctr_src_addr = CTRSockAddr::FromPlatform(src_addr);
+    if (ret >= 0 && buffer_parameters.output_src_address_buffer != 0 && src_addr_len > 0) {
+        CTRSockAddr ctr_src_addr = CTRSockAddr::FromPlatform(src_addr);
+        Memory::WriteBlock(buffer_parameters.output_src_address_buffer, &ctr_src_addr, sizeof(ctr_src_addr));
     }
 
     int result = 0;
@@ -567,6 +631,9 @@ static void RecvFrom(Service::Interface* self) {
     if (ret == SOCKET_ERROR_VALUE) {
         result = TranslateError(GET_ERRNO);
         total_received = 0;
+    } else {
+        // Write only the data we received to avoid overwriting parts of the buffer with zeros
+        Memory::WriteBlock(buffer_parameters.output_buffer_addr, output_buff.data(), total_received);
     }
 
     cmd_buffer[1] = result;
@@ -578,22 +645,28 @@ static void Poll(Service::Interface* self) {
     u32* cmd_buffer = Kernel::GetCommandBuffer();
     u32 nfds = cmd_buffer[1];
     int timeout = cmd_buffer[2];
-    CTRPollFD* input_fds = reinterpret_cast<CTRPollFD*>(Memory::GetPointer(cmd_buffer[6]));
-    CTRPollFD* output_fds = reinterpret_cast<CTRPollFD*>(Memory::GetPointer(cmd_buffer[0x104 >> 2]));
+
+    VAddr input_fds_addr = cmd_buffer[6];
+    VAddr output_fds_addr = cmd_buffer[0x104 >> 2];
+    if (!Memory::IsValidVirtualAddress(input_fds_addr) || !Memory::IsValidVirtualAddress(output_fds_addr)) {
+        cmd_buffer[1] = -1; // TODO(Subv): Find correct error code.
+        return;
+    }
+
+    std::vector<CTRPollFD> ctr_fds(nfds);
+    Memory::ReadBlock(input_fds_addr, ctr_fds.data(), nfds * sizeof(CTRPollFD));
 
     // The 3ds_pollfd and the pollfd structures may be different (Windows/Linux have different sizes)
     // so we have to copy the data
-    pollfd* platform_pollfd = new pollfd[nfds];
-    for (unsigned current_fds = 0; current_fds < nfds; ++current_fds)
-        platform_pollfd[current_fds] = CTRPollFD::ToPlatform(input_fds[current_fds]);
+    std::vector<pollfd> platform_pollfd(nfds);
+    std::transform(ctr_fds.begin(), ctr_fds.end(), platform_pollfd.begin(), CTRPollFD::ToPlatform);
 
-    int ret = ::poll(platform_pollfd, nfds, timeout);
+    const int ret = ::poll(platform_pollfd.data(), nfds, timeout);
 
     // Now update the output pollfd structure
-    for (unsigned current_fds = 0; current_fds < nfds; ++current_fds)
-        output_fds[current_fds] = CTRPollFD::FromPlatform(platform_pollfd[current_fds]);
+    std::transform(platform_pollfd.begin(), platform_pollfd.end(), ctr_fds.begin(), CTRPollFD::FromPlatform);
 
-    delete[] platform_pollfd;
+    Memory::WriteBlock(output_fds_addr, ctr_fds.data(), nfds * sizeof(CTRPollFD));
 
     int result = 0;
     if (ret == SOCKET_ERROR_VALUE)
@@ -608,14 +681,16 @@ static void GetSockName(Service::Interface* self) {
     u32 socket_handle = cmd_buffer[1];
     socklen_t ctr_len = cmd_buffer[2];
 
-    CTRSockAddr* ctr_dest_addr = reinterpret_cast<CTRSockAddr*>(Memory::GetPointer(cmd_buffer[0x104 >> 2]));
+    // Memory address of the ctr_dest_addr structure
+    VAddr ctr_dest_addr_addr = cmd_buffer[0x104 >> 2];
 
     sockaddr dest_addr;
     socklen_t dest_addr_len = sizeof(dest_addr);
     int ret = ::getsockname(socket_handle, &dest_addr, &dest_addr_len);
 
-    if (ctr_dest_addr != nullptr) {
-        *ctr_dest_addr = CTRSockAddr::FromPlatform(dest_addr);
+    if (ctr_dest_addr_addr != 0 && Memory::IsValidVirtualAddress(ctr_dest_addr_addr)) {
+        CTRSockAddr ctr_dest_addr = CTRSockAddr::FromPlatform(dest_addr);
+        Memory::WriteBlock(ctr_dest_addr_addr, &ctr_dest_addr, sizeof(ctr_dest_addr));
     } else {
         cmd_buffer[1] = -1; // TODO(Subv): Verify error
         return;
@@ -647,14 +722,16 @@ static void GetPeerName(Service::Interface* self) {
     u32 socket_handle = cmd_buffer[1];
     socklen_t len = cmd_buffer[2];
 
-    CTRSockAddr* ctr_dest_addr = reinterpret_cast<CTRSockAddr*>(Memory::GetPointer(cmd_buffer[0x104 >> 2]));
+    // Memory address of the ctr_dest_addr structure
+    VAddr ctr_dest_addr_addr = cmd_buffer[0x104 >> 2];
 
     sockaddr dest_addr;
     socklen_t dest_addr_len = sizeof(dest_addr);
     int ret = ::getpeername(socket_handle, &dest_addr, &dest_addr_len);
 
-    if (ctr_dest_addr != nullptr) {
-        *ctr_dest_addr = CTRSockAddr::FromPlatform(dest_addr);
+    if (ctr_dest_addr_addr != 0 && Memory::IsValidVirtualAddress(ctr_dest_addr_addr)) {
+        CTRSockAddr ctr_dest_addr = CTRSockAddr::FromPlatform(dest_addr);
+        Memory::WriteBlock(ctr_dest_addr_addr, &ctr_dest_addr, sizeof(ctr_dest_addr));
     } else {
         cmd_buffer[1] = -1;
         return;
@@ -676,13 +753,17 @@ static void Connect(Service::Interface* self) {
     u32 socket_handle = cmd_buffer[1];
     socklen_t len = cmd_buffer[2];
 
-    CTRSockAddr* ctr_input_addr = reinterpret_cast<CTRSockAddr*>(Memory::GetPointer(cmd_buffer[6]));
-    if (ctr_input_addr == nullptr) {
+    // Memory address of the ctr_input_addr structure
+    VAddr ctr_input_addr_addr = cmd_buffer[6];
+    if (!Memory::IsValidVirtualAddress(ctr_input_addr_addr)) {
         cmd_buffer[1] = -1; // TODO(Subv): Verify error
         return;
     }
 
-    sockaddr input_addr = CTRSockAddr::ToPlatform(*ctr_input_addr);
+    CTRSockAddr ctr_input_addr;
+    Memory::ReadBlock(ctr_input_addr_addr, &ctr_input_addr, sizeof(ctr_input_addr));
+
+    sockaddr input_addr = CTRSockAddr::ToPlatform(ctr_input_addr);
     int ret = ::connect(socket_handle, &input_addr, sizeof(input_addr));
     int result = 0;
     if (ret != 0)
@@ -717,6 +798,72 @@ static void ShutdownSockets(Service::Interface* self) {
     cmd_buffer[1] = 0;
 }
 
+static void GetSockOpt(Service::Interface* self) {
+    u32* cmd_buffer = Kernel::GetCommandBuffer();
+    u32 socket_handle = cmd_buffer[1];
+    u32 level = cmd_buffer[2];
+    int optname = TranslateSockOpt(cmd_buffer[3]);
+    socklen_t optlen = (socklen_t)cmd_buffer[4];
+
+    int ret = -1;
+    int err = 0;
+
+    if(optname < 0) {
+#ifdef _WIN32
+        err = WSAEINVAL;
+#else
+        err = EINVAL;
+#endif
+    } else {
+        // 0x100 = static buffer offset (bytes)
+        // + 0x4 = 2nd pointer (u32) position
+        // >> 2  = convert to u32 offset instead of byte offset (cmd_buffer = u32*)
+        char* optval = reinterpret_cast<char *>(Memory::GetPointer(cmd_buffer[0x104 >> 2]));
+
+        ret = ::getsockopt(socket_handle, level, optname, optval, &optlen);
+        err = 0;
+        if (ret == SOCKET_ERROR_VALUE) {
+            err = TranslateError(GET_ERRNO);
+        }
+    }
+
+    cmd_buffer[0] = IPC::MakeHeader(0x11, 4, 2);
+    cmd_buffer[1] = ret;
+    cmd_buffer[2] = err;
+    cmd_buffer[3] = optlen;
+}
+
+static void SetSockOpt(Service::Interface* self) {
+    u32* cmd_buffer = Kernel::GetCommandBuffer();
+    u32 socket_handle = cmd_buffer[1];
+    u32 level = cmd_buffer[2];
+    int optname = TranslateSockOpt(cmd_buffer[3]);
+
+    int ret = -1;
+    int err = 0;
+
+    if(optname < 0) {
+#ifdef _WIN32
+        err = WSAEINVAL;
+#else
+        err = EINVAL;
+#endif
+    } else {
+        socklen_t optlen = static_cast<socklen_t>(cmd_buffer[4]);
+        const char* optval = reinterpret_cast<const char *>(Memory::GetPointer(cmd_buffer[8]));
+
+        ret = static_cast<u32>(::setsockopt(socket_handle, level, optname, optval, optlen));
+        err = 0;
+        if (ret == SOCKET_ERROR_VALUE) {
+            err = TranslateError(GET_ERRNO);
+        }
+    }
+
+    cmd_buffer[0] = IPC::MakeHeader(0x12, 4, 4);
+    cmd_buffer[1] = ret;
+    cmd_buffer[2] = err;
+}
+
 const Interface::FunctionInfo FunctionTable[] = {
     {0x00010044, InitializeSockets,             "InitializeSockets"},
     {0x000200C2, Socket,                        "Socket"},
@@ -732,9 +879,10 @@ const Interface::FunctionInfo FunctionTable[] = {
     {0x000C0082, Shutdown,                      "Shutdown"},
     {0x000D0082, nullptr,                       "GetHostByName"},
     {0x000E00C2, nullptr,                       "GetHostByAddr"},
-    {0x000F0106, nullptr,                       "unknown_resolve_ip"},
-    {0x00110102, nullptr,                       "GetSockOpt"},
-    {0x00120104, nullptr,                       "SetSockOpt"},
+    {0x000F0106, nullptr,                       "GetAddrInfo"},
+    {0x00100102, nullptr,                       "GetNameInfo"},
+    {0x00110102, GetSockOpt,                    "GetSockOpt"},
+    {0x00120104, SetSockOpt,                    "SetSockOpt"},
     {0x001300C2, Fcntl,                         "Fcntl"},
     {0x00140084, Poll,                          "Poll"},
     {0x00150042, nullptr,                       "SockAtMark"},
@@ -749,6 +897,7 @@ const Interface::FunctionInfo FunctionTable[] = {
     {0x001E0040, nullptr,                       "ICMPClose"},
     {0x001F0040, nullptr,                       "GetResolverInfo"},
     {0x00210002, nullptr,                       "CloseSockets"},
+    {0x00230040, nullptr,                       "AddGlobalSocket"},
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////

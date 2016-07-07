@@ -1,6 +1,6 @@
-# CMake 2.8.11 required for Qt5 settings to be applied automatically on
-# dependent libraries.
-cmake_minimum_required(VERSION 2.8.11)
+# CMake 3.1 required for Qt5 settings to be applied automatically on
+# dependent libraries and IMPORTED targets.
+cmake_minimum_required(VERSION 3.1)
 
 function(download_bundled_external remote_path lib_name prefix_var)
     set(prefix "${CMAKE_BINARY_DIR}/externals/${lib_name}")
@@ -35,12 +35,11 @@ endfunction()
 
 project(citra)
 
-option(ENABLE_GLFW "Enable the GLFW frontend" ON)
-option(CITRA_USE_BUNDLED_GLFW "Download bundled GLFW binaries" OFF)
+option(ENABLE_SDL2 "Enable the SDL2 frontend" ON)
+option(CITRA_USE_BUNDLED_SDL2 "Download bundled SDL2 binaries" OFF)
 
 option(ENABLE_QT "Enable the Qt frontend" ON)
 option(CITRA_USE_BUNDLED_QT "Download bundled Qt binaries" OFF)
-option(CITRA_FORCE_QT4 "Use Qt4 even if Qt5 is available." OFF)
 
 if(NOT EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/.git/hooks/pre-commit)
     message(STATUS "Copying pre-commit hook")
@@ -65,8 +64,8 @@ endif()
 message(STATUS "Target architecture: ${ARCHITECTURE}")
 
 if (NOT MSVC)
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11 -Wno-attributes -pthread")
-    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -pthread")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++1y -Wno-attributes")
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS}")
 
     if (ARCHITECTURE_x86_64)
         set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -msse4.1")
@@ -135,34 +134,36 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/externals/cmake-modules")
 find_package(OpenGL REQUIRED)
 include_directories(${OPENGL_INCLUDE_DIR})
 
-if (ENABLE_GLFW)
-    if (CITRA_USE_BUNDLED_GLFW)
+# Prefer the -pthread flag on Linux.
+set (THREADS_PREFER_PTHREAD_FLAG ON)
+find_package(Threads REQUIRED)
+
+if (ENABLE_SDL2)
+    if (CITRA_USE_BUNDLED_SDL2)
         # Detect toolchain and platform
         if (MSVC14 AND ARCHITECTURE_x86_64)
-            set(GLFW_VER "glfw-3.1.1-msvc2015_64")
-        elseif (MSVC12 AND ARCHITECTURE_x86_64)
-            set(GLFW_VER "glfw-3.1.1-msvc2013_64")
+            set(SDL2_VER "SDL2-2.0.4")
         else()
-            message(FATAL_ERROR "No bundled GLFW binaries for your toolchain. Disable CITRA_USE_BUNDLED_GLFW and provide your own.")
+            message(FATAL_ERROR "No bundled SDL2 binaries for your toolchain. Disable CITRA_USE_BUNDLED_SDL2 and provide your own.")
         endif()
 
-        if (DEFINED GLFW_VER)
-            download_bundled_external("glfw/" ${GLFW_VER} GLFW_PREFIX)
+        if (DEFINED SDL2_VER)
+            download_bundled_external("sdl2/" ${SDL2_VER} SDL2_PREFIX)
         endif()
 
-        set(GLFW_INCLUDE_DIRS "${GLFW_PREFIX}/include" CACHE PATH "Path to GLFW3 headers")
-        set(GLFW_LIBRARY_DIRS "${GLFW_PREFIX}/lib" CACHE PATH "Path to GLFW3 libraries")
-        set(GLFW_LIBRARIES glfw3)
+        set(SDL2_FOUND YES)
+        set(SDL2_INCLUDE_DIR "${SDL2_PREFIX}/include" CACHE PATH "Path to SDL2 headers")
+        set(SDL2_LIBRARY "${SDL2_PREFIX}/lib/x64/SDL2.lib" CACHE PATH "Path to SDL2 library")
+        set(SDL2_DLL_DIR "${SDL2_PREFIX}/lib/x64/" CACHE PATH "Path to SDL2.dll")
     else()
-        find_package(PkgConfig REQUIRED)
-        pkg_search_module(GLFW REQUIRED glfw3)
+        find_package(SDL2 REQUIRED)
     endif()
+else()
+    set(SDL2_FOUND NO)
 endif()
 
 IF (APPLE)
     FIND_LIBRARY(COCOA_LIBRARY Cocoa)           # Umbrella framework for everything GUI-related
-    FIND_LIBRARY(IOKIT_LIBRARY IOKit)           # GLFW dependency
-    FIND_LIBRARY(COREVIDEO_LIBRARY CoreVideo)   # GLFW dependency
     set(PLATFORM_LIBRARIES iconv ${COCOA_LIBRARY} ${IOKIT_LIBRARY} ${COREVIDEO_LIBRARY})
 
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -stdlib=libc++")
@@ -199,16 +200,8 @@ if (ENABLE_QT)
         set(QT_PREFIX_HINT)
     endif()
 
-    if (NOT CITRA_FORCE_QT4)
-        find_package(Qt5 COMPONENTS Widgets OpenGL ${QT_PREFIX_HINT})
-        set(CITRA_QT_LIBS Qt5::Widgets Qt5::OpenGL)
-    endif()
-
-    if (CITRA_FORCE_QT4 OR NOT Qt5_FOUND)
-        # Try to fallback to Qt4
-        find_package(Qt4 REQUIRED COMPONENTS QtGui QtOpenGL ${QT_PREFIX_HINT})
-        set(CITRA_QT_LIBS Qt4::QtGui Qt4::QtOpenGL)
-    endif()
+    find_package(Qt5 REQUIRED COMPONENTS Widgets OpenGL ${QT_PREFIX_HINT})
+    set(CITRA_QT_LIBS Qt5::Widgets Qt5::OpenGL)
 endif()
 
 # This function should be passed a list of all files in a target. It will automatically generate
@@ -250,6 +243,11 @@ if(ENABLE_QT)
     include_directories(externals/qhexedit)
     add_subdirectory(externals/qhexedit)
 endif()
+
+add_subdirectory(externals/soundtouch)
+
+enable_testing()
+
 add_subdirectory(src)
 
 # Install freedesktop.org metadata files, following those specifications:

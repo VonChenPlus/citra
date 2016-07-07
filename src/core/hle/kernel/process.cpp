@@ -2,10 +2,11 @@
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
+#include <memory>
+
 #include "common/assert.h"
 #include "common/common_funcs.h"
 #include "common/logging/log.h"
-#include "common/make_unique.h"
 
 #include "core/hle/kernel/memory.h"
 #include "core/hle/kernel/process.h"
@@ -35,7 +36,7 @@ SharedPtr<Process> Process::Create(SharedPtr<CodeSet> code_set) {
 
     process->codeset = std::move(code_set);
     process->flags.raw = 0;
-    process->flags.memory_region = MemoryRegion::APPLICATION;
+    process->flags.memory_region.Assign(MemoryRegion::APPLICATION);
     Memory::InitLegacyAddressSpace(process->vm_manager);
 
     return process;
@@ -130,9 +131,11 @@ void Process::Run(s32 main_thread_priority, u32 stack_size) {
     Kernel::SetupMainThread(codeset->entrypoint, main_thread_priority);
 }
 
+VAddr Process::GetLinearHeapAreaAddress() const {
+    return kernel_version < 0x22C ? Memory::LINEAR_HEAP_VADDR : Memory::NEW_LINEAR_HEAP_VADDR;
+}
 VAddr Process::GetLinearHeapBase() const {
-    return (kernel_version < 0x22C ? Memory::LINEAR_HEAP_VADDR : Memory::NEW_LINEAR_HEAP_VADDR)
-            + memory_region->base;
+    return GetLinearHeapAreaAddress() + memory_region->base;
 }
 
 VAddr Process::GetLinearHeapLimit() const {
@@ -206,7 +209,7 @@ ResultVal<VAddr> Process::LinearAllocate(VAddr target, u32 size, VMAPermission p
         return ERR_INVALID_ADDRESS;
     }
 
-    // Expansion of the linear heap is only allowed if you do an allocation immediatelly at its
+    // Expansion of the linear heap is only allowed if you do an allocation immediately at its
     // end. It's possible to free gaps in the middle of the heap and then reallocate them later,
     // but expansions are only allowed at the end.
     if (target == heap_end) {

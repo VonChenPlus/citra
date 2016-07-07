@@ -3,6 +3,7 @@
 // Refer to the license.txt file included.
 
 #include <cstring>
+#include "common/alignment.h"
 #include "core/hle/hle.h"
 #include "core/hle/kernel/mutex.h"
 #include "core/hle/kernel/shared_memory.h"
@@ -22,9 +23,10 @@ const Interface::FunctionInfo FunctionTable[] = {
     {0x00060000, nullptr,               "ReleaseSoundChannels"},
     {0x00070000, nullptr,               "AcquireCaptureDevice"},
     {0x00080040, nullptr,               "ReleaseCaptureDevice"},
-    {0x00090082, nullptr,               "FlushDCache"},
-    {0x000A0082, nullptr,               "StoreDCache"},
-    {0x000B0082, nullptr,               "InvalidateDCache"},
+    {0x00090082, nullptr,               "FlushDataCache"},
+    {0x000A0082, nullptr,               "StoreDataCache"},
+    {0x000B0082, nullptr,               "InvalidateDataCache"},
+    {0x000C0000, nullptr,               "Reset"},
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -40,14 +42,16 @@ static Kernel::SharedPtr<Kernel::Mutex> mutex = nullptr;
 void Initialize(Service::Interface* self) {
     u32* cmd_buff = Kernel::GetCommandBuffer();
 
-    shared_memory = Kernel::SharedMemory::Create(cmd_buff[1],
-            Kernel::MemoryPermission::ReadWrite,
-            Kernel::MemoryPermission::ReadWrite, "CSNDSharedMem");
+    u32 size = Common::AlignUp(cmd_buff[1], Memory::PAGE_SIZE);
+    using Kernel::MemoryPermission;
+    shared_memory = Kernel::SharedMemory::Create(nullptr, size,
+                                                 MemoryPermission::ReadWrite, MemoryPermission::ReadWrite,
+                                                 0, Kernel::MemoryRegion::BASE, "CSND:SharedMemory");
 
     mutex = Kernel::Mutex::Create(false);
 
-    cmd_buff[1] = 0;
-    cmd_buff[2] = 0x4000000;
+    cmd_buff[1] = RESULT_SUCCESS.raw;
+    cmd_buff[2] = IPC::MoveHandleDesc(2);
     cmd_buff[3] = Kernel::g_handle_table.Create(mutex).MoveFrom();
     cmd_buff[4] = Kernel::g_handle_table.Create(shared_memory).MoveFrom();
 }

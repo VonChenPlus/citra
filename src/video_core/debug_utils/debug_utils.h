@@ -4,21 +4,32 @@
 
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <condition_variable>
+#include <iterator>
 #include <list>
 #include <map>
 #include <memory>
 #include <mutex>
+#include <string>
+#include <utility>
 #include <vector>
 
+#include "common/common_types.h"
 #include "common/vector_math.h"
-
-#include "core/tracer/recorder.h"
 
 #include "video_core/pica.h"
 
+namespace CiTrace {
+class Recorder;
+}
+
 namespace Pica {
+
+namespace Shader {
+struct ShaderSetup;
+}
 
 class DebugContext {
 public:
@@ -29,7 +40,7 @@ public:
         PicaCommandProcessed,
         IncomingPrimitiveBatch,
         FinishedPrimitiveBatch,
-        VertexLoaded,
+        VertexShaderInvocation,
         IncomingDisplayTransfer,
         GSPCommandProcessed,
         BufferSwapped,
@@ -113,7 +124,15 @@ public:
      * @param event Event which has happened
      * @param data Optional data pointer (pass nullptr if unused). Needs to remain valid until Resume() is called.
      */
-    void OnEvent(Event event, void* data);
+    void OnEvent(Event event, void* data) {
+        // This check is left in the header to allow the compiler to inline it.
+        if (!breakpoints[(int)event].enabled)
+            return;
+        // For the rest of event handling, call a separate function.
+        DoOnEvent(event, data);
+    }
+
+    void DoOnEvent(Event event, void *data);
 
     /**
      * Resume from the current breakpoint.
@@ -125,12 +144,14 @@ public:
      * Delete all set breakpoints and resume emulation.
      */
     void ClearBreakpoints() {
-        breakpoints.clear();
+        for (auto &bp : breakpoints) {
+            bp.enabled = false;
+        }
         Resume();
     }
 
     // TODO: Evaluate if access to these members should be hidden behind a public interface.
-    std::map<Event, BreakPoint> breakpoints;
+    std::array<BreakPoint, (int)Event::NumEvents> breakpoints;
     Event active_breakpoint;
     bool at_breakpoint = false;
 
@@ -157,32 +178,11 @@ extern std::shared_ptr<DebugContext> g_debug_context; // TODO: Get rid of this g
 
 namespace DebugUtils {
 
-#define PICA_DUMP_GEOMETRY 0
 #define PICA_DUMP_TEXTURES 0
 #define PICA_LOG_TEV 0
 
-// Simple utility class for dumping geometry data to an OBJ file
-class GeometryDumper {
-public:
-    struct Vertex {
-        std::array<float,3> pos;
-    };
-
-    void AddTriangle(Vertex& v0, Vertex& v1, Vertex& v2);
-
-    void Dump();
-
-private:
-    struct Face {
-        int index[3];
-    };
-
-    std::vector<Vertex> vertices;
-    std::vector<Face> faces;
-};
-
 void DumpShader(const std::string& filename, const Regs::ShaderConfig& config,
-                const State::ShaderSetup& setup, const Regs::VSOutputAttributes* output_attributes);
+                const Shader::ShaderSetup& setup, const Regs::VSOutputAttributes* output_attributes);
 
 
 // Utility class to log Pica commands.
@@ -224,7 +224,41 @@ const Math::Vec4<u8> LookupTexture(const u8* source, int s, int t, const Texture
 
 void DumpTexture(const Pica::Regs::TextureConfig& texture_config, u8* data);
 
-void DumpTevStageConfig(const std::array<Pica::Regs::TevStageConfig,6>& stages);
+std::string GetTevStageConfigColorCombinerString(const Pica::Regs::TevStageConfig& tev_stage);
+std::string GetTevStageConfigAlphaCombinerString(const Pica::Regs::TevStageConfig& tev_stage);
+
+/// Dumps the Tev stage config to log at trace level
+void DumpTevStageConfig(const std::array<Pica::Regs::TevStageConfig, 6>& stages);
+
+/**
+ * Used in the vertex loader to merge access records. TODO: Investigate if actually useful.
+ */
+class MemoryAccessTracker {
+    /// Combine overlapping and close ranges
+    void SimplifyRanges() {
+        for (auto it = ranges.begin(); it != ranges.end(); ++it) {
+            // NOTE: We add 32 to the range end address to make sure "close" ranges are combined, too
+            auto it2 = std::next(it);
+            while (it2 != ranges.end() && it->first + it->second + 32 >= it2->first) {
+                it->second = std::max(it->second, it2->first + it2->second - it->first);
+                it2 = ranges.erase(it2);
+            }
+        }
+    }
+
+public:
+    /// Record a particular memory access in the list
+    void AddAccess(u32 paddr, u32 size) {
+        // Create new range or extend existing one
+        ranges[paddr] = std::max(ranges[paddr], size);
+
+        // Simplify ranges...
+        SimplifyRanges();
+    }
+
+    /// Map of accessed ranges (mapping start address to range size)
+    std::map<u32, u32> ranges;
+};
 
 } // namespace
 

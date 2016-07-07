@@ -6,10 +6,9 @@
 #include "core/arm/skyeye_common/armsupp.h"
 
 const InstructionSetEncodingItem arm_instruction[] = {
-    { "vmla", 4, ARMVFP2,      { 23, 27, 0x1C, 20, 21, 0x0, 9, 11, 0x5, 4, 4, 0 }},
-    { "vmls", 7, ARMVFP2,      { 28, 31, 0xF, 25, 27, 0x1, 23, 23, 1, 11, 11, 0, 8, 9, 0x2, 6, 6, 1, 4, 4, 0 }},
-    { "vnmla", 4, ARMVFP2,     { 23, 27, 0x1C, 20, 21, 0x1, 9, 11, 0x5, 4, 4, 0 }},
-    { "vnmla", 5, ARMVFP2,     { 23, 27, 0x1C, 20, 21, 0x2, 9, 11, 0x5, 6, 6, 1, 4, 4, 0 }},
+    { "vmla", 5, ARMVFP2,      { 23, 27, 0x1C, 20, 21, 0x0, 9, 11, 0x5, 6, 6, 0, 4, 4, 0 }},
+    { "vmls", 5, ARMVFP2,      { 23, 27, 0x1C, 20, 21, 0x0, 9, 11, 0x5, 6, 6, 1, 4, 4, 0 }},
+    { "vnmla", 5, ARMVFP2,     { 23, 27, 0x1C, 20, 21, 0x1, 9, 11, 0x5, 6, 6, 1, 4, 4, 0 }},
     { "vnmls", 5, ARMVFP2,     { 23, 27, 0x1C, 20, 21, 0x1, 9, 11, 0x5, 6, 6, 0, 4, 4, 0 }},
     { "vnmul", 5, ARMVFP2,     { 23, 27, 0x1C, 20, 21, 0x2, 9, 11, 0x5, 6, 6, 1, 4, 4, 0 }},
     { "vmul", 5, ARMVFP2,      { 23, 27, 0x1C, 20, 21, 0x2, 9, 11, 0x5, 6, 6, 0, 4, 4, 0 }},
@@ -210,7 +209,6 @@ const InstructionSetEncodingItem arm_instruction[] = {
 const InstructionSetEncodingItem arm_exclusion_code[] = {
     { "vmla", 0, ARMVFP2,      { 0 }},
     { "vmls", 0, ARMVFP2,      { 0 }},
-    { "vnmla", 0, ARMVFP2,     { 0 }},
     { "vnmla", 0, ARMVFP2,     { 0 }},
     { "vnmls", 0, ARMVFP2,     { 0 }},
     { "vnmul", 0, ARMVFP2,     { 0 }},
@@ -423,6 +421,10 @@ ARMDecodeStatus DecodeARMInstruction(u32 instr, s32* idx) {
     for (int i = 0; i < instr_slots; i++) {
         n = arm_instruction[i].attribute_value;
         base = 0;
+
+        // 3DS has no VFP3 support
+        if (arm_instruction[i].version == ARMVFP3)
+            continue;
 
         while (n) {
             if (arm_instruction[i].content[base + 1] == 31 && arm_instruction[i].content[base] == 0) {

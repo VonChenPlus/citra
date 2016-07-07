@@ -4,7 +4,7 @@
 
 #include <random>
 
-#include "core/hle/hle.h"
+#include "common/common_types.h"
 #include "core/hle/service/ssl_c.h"
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -31,7 +31,6 @@ static void GenerateRandomData(Service::Interface* self) {
 
     u32 size = cmd_buff[1];
     VAddr address = cmd_buff[3];
-    u8* output_buff = Memory::GetPointer(address);
 
     // Fill the output buffer with random data.
     u32 data = 0;
@@ -44,13 +43,13 @@ static void GenerateRandomData(Service::Interface* self) {
 
         if (size > 4) {
             // Use up the entire 4 bytes of the random data for as long as possible
-            *(u32*)(output_buff + i) = data;
+            Memory::Write32(address + i, data);
             i += 4;
         } else if (size == 2) {
-            *(u16*)(output_buff + i) = (u16)(data & 0xffff);
+            Memory::Write16(address + i, static_cast<u16>(data & 0xffff));
             i += 2;
         } else {
-            *(u8*)(output_buff + i) = (u8)(data & 0xff);
+            Memory::Write8(address + i, static_cast<u8>(data & 0xff));
             i++;
         }
     }
@@ -62,10 +61,24 @@ static void GenerateRandomData(Service::Interface* self) {
 const Interface::FunctionInfo FunctionTable[] = {
     {0x00010002, Initialize,            "Initialize"},
     {0x000200C2, nullptr,               "CreateContext"},
+    {0x00030000, nullptr,               "CreateRootCertChain"},
+    {0x00040040, nullptr,               "DestroyRootCertChain"},
     {0x00050082, nullptr,               "AddTrustedRootCA"},
+    {0x00060080, nullptr,               "RootCertChainAddDefaultCert"},
+    {0x00070080, nullptr,               "RootCertChainRemoveCert"},
+    {0x000E0040, nullptr,               "OpenDefaultClientCertContext"},
+    {0x000F0040, nullptr,               "CloseClientCertContext"},
     {0x00110042, GenerateRandomData,    "GenerateRandomData"},
+    {0x00120042, nullptr,               "InitializeConnectionSession"},
+    {0x00130040, nullptr,               "StartConnection"},
+    {0x00140040, nullptr,               "StartConnectionGetOut"},
     {0x00150082, nullptr,               "Read"},
     {0x00170082, nullptr,               "Write"},
+    {0x00180080, nullptr,               "ContextSetRootCertChain"},
+    {0x00190080, nullptr,               "ContextSetClientCert"},
+    {0x001B0080, nullptr,               "ContextClearOpt"},
+    {0x001E0040, nullptr,               "DestroyContext"},
+    {0x001F0082, nullptr,               "ContextInitSharedmem"}
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////

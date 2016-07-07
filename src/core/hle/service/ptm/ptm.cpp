@@ -3,7 +3,7 @@
 // Refer to the license.txt file included.
 
 #include "common/logging/log.h"
-
+#include "core/settings.h"
 #include "core/file_sys/file_backend.h"
 #include "core/hle/service/fs/archive.h"
 #include "core/hle/service/ptm/ptm.h"
@@ -89,6 +89,20 @@ void IsLegacyPowerOff(Service::Interface* self) {
     LOG_WARNING(Service_PTM, "(STUBBED) called");
 }
 
+void CheckNew3DS(Service::Interface* self) {
+    u32* cmd_buff = Kernel::GetCommandBuffer();
+    const bool is_new_3ds = Settings::values.is_new_3ds;
+
+    if (is_new_3ds) {
+        LOG_CRITICAL(Service_PTM, "The option 'is_new_3ds' is enabled as part of the 'System' settings. Citra does not fully support New 3DS emulation yet!");
+    }
+
+    cmd_buff[1] = RESULT_SUCCESS.raw;
+    cmd_buff[2] = is_new_3ds ? 1 : 0;
+
+    LOG_WARNING(Service_PTM, "(STUBBED) called isNew3DS = 0x%08x", static_cast<u32>(is_new_3ds));
+}
+
 void Init() {
     AddService(new PTM_Play_Interface);
     AddService(new PTM_Sysm_Interface);
@@ -103,15 +117,15 @@ void Init() {
     // If the archive didn't exist, create the files inside
     if (archive_result.Code().description == ErrorDescription::FS_NotFormatted) {
         // Format the archive to create the directories
-        Service::FS::FormatArchive(Service::FS::ArchiveIdCode::SharedExtSaveData, archive_path);
+        Service::FS::FormatArchive(Service::FS::ArchiveIdCode::SharedExtSaveData, FileSys::ArchiveFormatInfo(), archive_path);
         // Open it again to get a valid archive now that the folder exists
         archive_result = Service::FS::OpenArchive(Service::FS::ArchiveIdCode::SharedExtSaveData, archive_path);
         ASSERT_MSG(archive_result.Succeeded(), "Could not open the PTM SharedExtSaveData archive!");
 
         FileSys::Path gamecoin_path("gamecoin.dat");
         FileSys::Mode open_mode = {};
-        open_mode.write_flag = 1;
-        open_mode.create_flag = 1;
+        open_mode.write_flag.Assign(1);
+        open_mode.create_flag.Assign(1);
         // Open the file and write the default gamecoin information
         auto gamecoin_result = Service::FS::OpenFileFromArchive(*archive_result, gamecoin_path, open_mode);
         if (gamecoin_result.Succeeded()) {

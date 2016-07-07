@@ -17,7 +17,7 @@ namespace Loader {
 /// Loads an 3DSX file
 class AppLoader_THREEDSX final : public AppLoader {
 public:
-    AppLoader_THREEDSX(FileUtil::IOFile&& file, std::string filename, const std::string& filepath)
+    AppLoader_THREEDSX(FileUtil::IOFile&& file, const std::string& filename, const std::string& filepath)
         : AppLoader(std::move(file)), filename(std::move(filename)), filepath(filepath) {}
 
     /**
@@ -28,10 +28,25 @@ public:
     static FileType IdentifyType(FileUtil::IOFile& file);
 
     /**
+     * Returns the type of this file
+     * @return FileType corresponding to the loaded file
+     */
+    FileType GetFileType() override {
+        return IdentifyType(file);
+    }
+
+    /**
      * Load the bootable file
      * @return ResultStatus result of function
      */
     ResultStatus Load() override;
+
+    /**
+     * Get the icon (typically icon section) of the application
+     * @param buffer Reference to buffer to store data
+     * @return ResultStatus result of function
+     */
+    ResultStatus ReadIcon(std::vector<u8>& buffer) override;
 
     /**
      * Get the RomFS of the application
