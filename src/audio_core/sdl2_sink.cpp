@@ -3,16 +3,13 @@
 // Refer to the license.txt file included.
 
 #include <list>
+#include <numeric>
 #include <vector>
-
 #include <SDL.h>
-
 #include "audio_core/audio_core.h"
 #include "audio_core/sdl2_sink.h"
-
 #include "common/assert.h"
 #include "common/logging/log.h"
-#include <numeric>
 
 namespace AudioCore {
 
@@ -38,14 +35,15 @@ SDL2Sink::SDL2Sink() : impl(std::make_unique<Impl>()) {
     desired_audiospec.format = AUDIO_S16;
     desired_audiospec.channels = 2;
     desired_audiospec.freq = native_sample_rate;
-    desired_audiospec.samples = 1024;
+    desired_audiospec.samples = 512;
     desired_audiospec.userdata = impl.get();
     desired_audiospec.callback = &Impl::Callback;
 
     SDL_AudioSpec obtained_audiospec;
     SDL_zero(obtained_audiospec);
 
-    impl->audio_device_id = SDL_OpenAudioDevice(nullptr, false, &desired_audiospec, &obtained_audiospec, 0);
+    impl->audio_device_id =
+        SDL_OpenAudioDevice(nullptr, false, &desired_audiospec, &obtained_audiospec, 0);
     if (impl->audio_device_id <= 0) {
         LOG_CRITICAL(Audio_Sink, "SDL_OpenAudioDevice failed");
         return;
@@ -71,14 +69,12 @@ unsigned int SDL2Sink::GetNativeSampleRate() const {
     return impl->sample_rate;
 }
 
-void SDL2Sink::EnqueueSamples(const std::vector<s16>& samples) {
+void SDL2Sink::EnqueueSamples(const s16* samples, size_t sample_count) {
     if (impl->audio_device_id <= 0)
         return;
 
-    ASSERT_MSG(samples.size() % 2 == 0, "Samples must be in interleaved stereo PCM16 format (size must be a multiple of two)");
-
     SDL_LockAudioDevice(impl->audio_device_id);
-    impl->queue.emplace_back(samples);
+    impl->queue.emplace_back(samples, samples + sample_count * 2);
     SDL_UnlockAudioDevice(impl->audio_device_id);
 }
 
@@ -88,11 +84,12 @@ size_t SDL2Sink::SamplesInQueue() const {
 
     SDL_LockAudioDevice(impl->audio_device_id);
 
-    size_t total_size = std::accumulate(impl->queue.begin(), impl->queue.end(), static_cast<size_t>(0),
-        [](size_t sum, const auto& buffer) {
-            // Division by two because each stereo sample is made of two s16.
-            return sum + buffer.size() / 2;
-        });
+    size_t total_size = std::accumulate(impl->queue.begin(), impl->queue.end(),
+                                        static_cast<size_t>(0), [](size_t sum, const auto& buffer) {
+                                            // Division by two because each stereo sample is made of
+                                            // two s16.
+                                            return sum + buffer.size() / 2;
+                                        });
 
     SDL_UnlockAudioDevice(impl->audio_device_id);
 
@@ -102,7 +99,8 @@ size_t SDL2Sink::SamplesInQueue() const {
 void SDL2Sink::Impl::Callback(void* impl_, u8* buffer, int buffer_size_in_bytes) {
     Impl* impl = reinterpret_cast<Impl*>(impl_);
 
-    size_t remaining_size = static_cast<size_t>(buffer_size_in_bytes) / sizeof(s16); // Keep track of size in 16-bit increments.
+    size_t remaining_size = static_cast<size_t>(buffer_size_in_bytes) /
+                            sizeof(s16); // Keep track of size in 16-bit increments.
 
     while (remaining_size > 0 && !impl->queue.empty()) {
         if (impl->queue.front().size() <= remaining_size) {
@@ -113,7 +111,8 @@ void SDL2Sink::Impl::Callback(void* impl_, u8* buffer, int buffer_size_in_bytes)
         } else {
             memcpy(buffer, impl->queue.front().data(), remaining_size * sizeof(s16));
             buffer += remaining_size * sizeof(s16);
-            impl->queue.front().erase(impl->queue.front().begin(), impl->queue.front().begin() + remaining_size);
+            impl->queue.front().erase(impl->queue.front().begin(),
+                                      impl->queue.front().begin() + remaining_size);
             remaining_size = 0;
         }
     }

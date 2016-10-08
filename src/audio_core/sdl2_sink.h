@@ -6,7 +6,6 @@
 
 #include <cstddef>
 #include <memory>
-
 #include "audio_core/sink.h"
 
 namespace AudioCore {
@@ -18,7 +17,7 @@ public:
 
     unsigned int GetNativeSampleRate() const override;
 
-    void EnqueueSamples(const std::vector<s16>& samples) override;
+    void EnqueueSamples(const s16* samples, size_t sample_count) override;
 
     size_t SamplesInQueue() const override;
 

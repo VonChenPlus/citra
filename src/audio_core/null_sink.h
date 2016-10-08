@@ -5,7 +5,6 @@
 #pragma once
 
 #include <cstddef>
-
 #include "audio_core/audio_core.h"
 #include "audio_core/sink.h"
 
@@ -19,7 +18,7 @@ public:
         return native_sample_rate;
     }
 
-    void EnqueueSamples(const std::vector<s16>&) override {}
+    void EnqueueSamples(const s16*, size_t) override {}
 
     size_t SamplesInQueue() const override {
         return 0;

@@ -11,16 +11,15 @@ namespace Ui {
 class ConfigureSystem;
 }
 
-class ConfigureSystem : public QWidget
-{
+class ConfigureSystem : public QWidget {
     Q_OBJECT
 
 public:
-    explicit ConfigureSystem(QWidget *parent = nullptr);
+    explicit ConfigureSystem(QWidget* parent = nullptr);
     ~ConfigureSystem();
 
     void applyConfiguration();
-    void setConfiguration(bool emulation_running);
+    void setConfiguration();
 
 public slots:
     void updateBirthdayComboBox(int birthmonth_index);

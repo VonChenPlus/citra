@@ -11,12 +11,11 @@ namespace Ui {
 class ConfigureDialog;
 }
 
-class ConfigureDialog : public QDialog
-{
+class ConfigureDialog : public QDialog {
     Q_OBJECT
 
 public:
-    explicit ConfigureDialog(QWidget *parent, bool emulation_running);
+    explicit ConfigureDialog(QWidget* parent);
     ~ConfigureDialog();
 
     void applyConfiguration();
@@ -26,5 +25,4 @@ private:
 
 private:
     std::unique_ptr<Ui::ConfigureDialog> ui;
-    bool emulation_running;
 };

@@ -3,10 +3,8 @@
 // Refer to the license.txt file included.
 
 #include <algorithm>
-
 #include "common/assert.h"
 #include "common/logging/log.h"
-
 #include "core/hle/config_mem.h"
 #include "core/hle/kernel/kernel.h"
 #include "core/hle/kernel/memory.h"
@@ -42,6 +40,10 @@ void WaitObject::WakeupAllWaitingThreads() {
     HLE::Reschedule(__func__);
 }
 
+const std::vector<SharedPtr<Thread>>& WaitObject::GetWaitingThreads() const {
+    return waiting_threads;
+}
+
 HandleTable::HandleTable() {
     next_generation = 1;
     Clear();
@@ -61,7 +63,8 @@ ResultVal<Handle> HandleTable::Create(SharedPtr<Object> obj) {
 
     // Overflow count so it fits in the 15 bits dedicated to the generation in the handle.
     // CTR-OS doesn't use generation 0, so skip straight to 1.
-    if (next_generation >= (1 << 15)) next_generation = 1;
+    if (next_generation >= (1 << 15))
+        next_generation = 1;
 
     generations[slot] = generation;
     objects[slot] = std::move(obj);

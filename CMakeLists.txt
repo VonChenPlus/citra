@@ -1,6 +1,5 @@
-# CMake 3.1 required for Qt5 settings to be applied automatically on
-# dependent libraries and IMPORTED targets.
-cmake_minimum_required(VERSION 3.1)
+# CMake 3.2 required for cmake to know the right flags for CXX standard on OSX
+cmake_minimum_required(VERSION 3.2)
 
 function(download_bundled_external remote_path lib_name prefix_var)
     set(prefix "${CMAKE_BINARY_DIR}/externals/${lib_name}")
@@ -63,8 +62,11 @@ if (NOT DEFINED ARCHITECTURE)
 endif()
 message(STATUS "Target architecture: ${ARCHITECTURE}")
 
+set(CMAKE_CXX_STANDARD 14)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
 if (NOT MSVC)
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++1y -Wno-attributes")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-attributes")
     set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS}")
 else()
     # Silence "deprecation" warnings
@@ -116,12 +118,11 @@ else()
 endif()
 
 find_package(Boost 1.57.0 QUIET)
-if (Boost_FOUND)
-    include_directories(${Boost_INCLUDE_DIRS})
-else()
+if (NOT Boost_FOUND)
     message(STATUS "Boost 1.57.0 or newer not found, falling back to externals")
-    include_directories(externals/boost)
+    set(Boost_INCLUDE_DIR "${CMAKE_SOURCE_DIR}/externals/boost")
 endif()
+include_directories(${Boost_INCLUDE_DIR})
 
 # Include bundled CMake modules
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/externals/cmake-modules")
@@ -179,7 +180,7 @@ ENDIF (APPLE)
 if (ENABLE_QT)
     if (CITRA_USE_BUNDLED_QT)
         if (MSVC14 AND ARCHITECTURE_x86_64)
-            set(QT_VER qt-5.5-msvc2015_64)
+            set(QT_VER qt-5.7-msvc2015_64)
         else()
             message(FATAL_ERROR "No bundled Qt binaries for your toolchain. Disable CITRA_USE_BUNDLED_QT and provide your own.")
         endif()
@@ -224,6 +225,9 @@ git_branch_name(GIT_BRANCH)
 set(INI_PREFIX "${CMAKE_CURRENT_SOURCE_DIR}/externals/inih")
 include_directories(${INI_PREFIX})
 add_subdirectory(${INI_PREFIX})
+
+option(DYNARMIC_TESTS OFF)
+add_subdirectory(externals/dynarmic)
 
 add_subdirectory(externals/glad)
 include_directories(externals/microprofile)

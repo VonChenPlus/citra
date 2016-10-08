@@ -7,7 +7,6 @@
 
 #include <memory>
 #include <QMainWindow>
-
 #include "ui_main.h"
 
 class Config;
@@ -22,12 +21,13 @@ class RegistersWidget;
 class CallstackWidget;
 class GPUCommandStreamWidget;
 class GPUCommandListWidget;
+class WaitTreeWidget;
 
-class GMainWindow : public QMainWindow
-{
+class GMainWindow : public QMainWindow {
     Q_OBJECT
 
-    static const int max_recent_files_item = 10; ///< Max number of recently loaded items to keep track
+    /// Max number of recently loaded items to keep track of
+    static const int max_recent_files_item = 10;
 
     // TODO: Make use of this!
     enum {
@@ -129,6 +129,7 @@ private:
     CallstackWidget* callstackWidget;
     GPUCommandStreamWidget* graphicsWidget;
     GPUCommandListWidget* graphicsCommandsWidget;
+    WaitTreeWidget* waitTreeWidget;
 
     QAction* actions_recent_files[max_recent_files_item];
 };

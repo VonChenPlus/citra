@@ -12,7 +12,7 @@ class VMManager;
 
 namespace AudioCore {
 
-constexpr int native_sample_rate = 32728;  ///< 32kHz
+constexpr int native_sample_rate = 32728; ///< 32kHz
 
 /// Initialise Audio Core
 void Init();
@@ -22,6 +22,9 @@ void AddAddressSpace(Kernel::VMManager& vm_manager);
 
 /// Select the sink to use based on sink id.
 void SelectSink(std::string sink_id);
+
+/// Enable/Disable stretching.
+void EnableStretching(bool enable);
 
 /// Shutdown Audio Core
 void Shutdown();

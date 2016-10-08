@@ -5,7 +5,6 @@
 #pragma once
 
 #include "common/swap.h"
-
 #include "core/hle/kernel/shared_memory.h"
 #include "core/hle/service/service.h"
 
@@ -20,6 +19,11 @@ struct CFNT {
     u32_le version;
     u32_le file_size;
     u32_le num_blocks;
+};
+
+struct SectionHeader {
+    u8 magic[4];
+    u32_le section_size;
 };
 
 struct FINF {
@@ -75,12 +79,13 @@ struct CWDH {
 };
 
 /**
- * Relocates the internal addresses of the BCFNT Shared Font to the new base.
+ * Relocates the internal addresses of the BCFNT Shared Font to the new base. The current base will
+ * be auto-detected based on the file headers.
+ *
  * @param shared_font SharedMemory object that contains the Shared Font
- * @param previous_address Previous address at which the offsets in the structure were based.
  * @param new_address New base for the offsets in the structure.
  */
-void RelocateSharedFont(Kernel::SharedPtr<Kernel::SharedMemory> shared_font, VAddr previous_address, VAddr new_address);
+void RelocateSharedFont(Kernel::SharedPtr<Kernel::SharedMemory> shared_font, VAddr new_address);
 
 } // namespace BCFNT
 } // namespace APT

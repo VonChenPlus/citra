@@ -9,14 +9,13 @@
 #include "core/arm/skyeye_common/vfp/asm_vfp.h"
 
 namespace Core {
-    struct ThreadContext;
+struct ThreadContext;
 }
 
 /// Generic ARM11 CPU interface
 class ARM_Interface : NonCopyable {
 public:
-    virtual ~ARM_Interface() {
-    }
+    virtual ~ARM_Interface() {}
 
     /**
      * Runs the CPU for the given number of instructions
@@ -31,6 +30,9 @@ public:
     void Step() {
         Run(1);
     }
+
+    /// Clear all instruction cache
+    virtual void ClearInstructionCache() = 0;
 
     /**
      * Set the Program Counter to an address
@@ -119,15 +121,6 @@ public:
     virtual void AddTicks(u64 ticks) = 0;
 
     /**
-     * Initializes a CPU context for use on this CPU
-     * @param context Thread context to reset
-     * @param stack_top Pointer to the top of the stack
-     * @param entry_point Entry point for execution
-     * @param arg User argument for thread
-     */
-    virtual void ResetContext(Core::ThreadContext& context, u32 stack_top, u32 entry_point, u32 arg) = 0;
-
-    /**
      * Saves the current CPU context
      * @param ctx Thread context to save
      */
@@ -147,10 +140,10 @@ public:
         return num_instructions;
     }
 
-    s64 down_count = 0; ///< A decreasing counter of remaining cycles before the next event, decreased by the cpu run loop
+    s64 down_count = 0; ///< A decreasing counter of remaining cycles before the next event,
+                        /// decreased by the cpu run loop
 
 protected:
-
     /**
      * Executes the given number of instructions
      * @param num_instructions Number of instructions to executes
@@ -158,6 +151,5 @@ protected:
     virtual void ExecuteInstructions(int num_instructions) = 0;
 
 private:
-
     u64 num_instructions = 0; ///< Number of instructions executed
 };

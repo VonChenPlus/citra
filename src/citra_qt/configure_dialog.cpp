@@ -4,33 +4,23 @@
 
 #include "citra_qt/config.h"
 #include "citra_qt/configure_dialog.h"
+#include "core/settings.h"
 #include "ui_configure.h"
 
-
-#include "core/settings.h"
-
-ConfigureDialog::ConfigureDialog(QWidget *parent, bool running) :
-    QDialog(parent),
-    ui(new Ui::ConfigureDialog),
-    emulation_running(running)
-{
+ConfigureDialog::ConfigureDialog(QWidget* parent) : QDialog(parent), ui(new Ui::ConfigureDialog) {
     ui->setupUi(this);
     this->setConfiguration();
 }
 
-ConfigureDialog::~ConfigureDialog() {
-}
+ConfigureDialog::~ConfigureDialog() {}
 
-void ConfigureDialog::setConfiguration() {
-    // System tab needs set manually
-    // depending on whether emulation is running
-    ui->systemTab->setConfiguration(emulation_running);
-}
+void ConfigureDialog::setConfiguration() {}
 
 void ConfigureDialog::applyConfiguration() {
     ui->generalTab->applyConfiguration();
     ui->systemTab->applyConfiguration();
     ui->inputTab->applyConfiguration();
+    ui->graphicsTab->applyConfiguration();
     ui->audioTab->applyConfiguration();
     ui->debugTab->applyConfiguration();
 }
